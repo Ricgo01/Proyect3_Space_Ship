@@ -1,0 +1,7 @@
+/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-9c04d5cbf68101f9/out/lib/libraylib.a
+/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-9c04d5cbf68101f9/out/include/raylib.h
+/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-9c04d5cbf68101f9/out/include/rlgl.h
+/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-9c04d5cbf68101f9/out/include/raymath.h
+/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-9c04d5cbf68101f9/out/lib/pkgconfig/raylib.pc
+/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-9c04d5cbf68101f9/out/lib/cmake/raylib/raylib-config-version.cmake
+/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-9c04d5cbf68101f9/out/lib/cmake/raylib/raylib-config.cmake

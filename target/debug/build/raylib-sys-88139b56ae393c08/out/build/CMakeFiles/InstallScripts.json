@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-88139b56ae393c08/out/build/cmake_install.cmake",
+		"/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-88139b56ae393c08/out/build/raylib/cmake_install.cmake",
+		"/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-88139b56ae393c08/out/build/raylib/external/glfw/cmake_install.cmake",
+		"/home/ricgo/Graficas/3D-Spaceship/target/debug/build/raylib-sys-88139b56ae393c08/out/build/raylib/external/glfw/src/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

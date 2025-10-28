@@ -1,0 +1,1 @@
+/home/ricgo/Graficas/3D-Spaceship/target/debug/spaceship: /home/ricgo/Graficas/3D-Spaceship/src/framebuffer.rs /home/ricgo/Graficas/3D-Spaceship/src/line.rs /home/ricgo/Graficas/3D-Spaceship/src/main.rs /home/ricgo/Graficas/3D-Spaceship/src/obj_loader.rs /home/ricgo/Graficas/3D-Spaceship/src/shader.rs /home/ricgo/Graficas/3D-Spaceship/src/triangle.rs
