@@ -29,6 +29,7 @@ pub struct Uniforms {
     current_shader: CelestialBody,
     light_position: Vec3,
     camera_position: Vec3,
+    detail_level: f32,
 }
 
 struct Camera {
@@ -96,23 +97,43 @@ impl Camera {
 
     fn zoom_in(&mut self, amount: f32) {
         let direction = (self.target - self.position).normalize();
-        self.position += direction * amount;
+        let current_distance = (self.position - self.target).magnitude();
+        
+        // Zoom más lento cuando está cerca (para mejor control)
+        let adjusted_amount = if current_distance < 200.0 {
+            amount * 0.5
+        } else if current_distance < 500.0 {
+            amount * 0.75
+        } else {
+            amount
+        };
+        
+        self.position += direction * adjusted_amount;
         
         // No acercarse demasiado
         let distance = (self.position - self.target).magnitude();
-        if distance < 50.0 {
-            self.position = self.target - direction * 50.0;
+        if distance < 80.0 {
+            self.position = self.target - direction * 80.0;
         }
     }
 
     fn zoom_out(&mut self, amount: f32) {
         let direction = (self.target - self.position).normalize();
-        self.position -= direction * amount;
+        let current_distance = (self.position - self.target).magnitude();
         
-        // No alejarse demasiado
+        // Zoom más rápido cuando está lejos
+        let adjusted_amount = if current_distance > 2000.0 {
+            amount * 1.5
+        } else {
+            amount
+        };
+        
+        self.position -= adjusted_amount * direction;
+        
+        // No alejarse demasiado (aumentado para ver todo el sistema)
         let distance = (self.position - self.target).magnitude();
-        if distance > 2000.0 {
-            self.position = self.target - direction * 2000.0;
+        if distance > 4000.0 {
+            self.position = self.target - direction * 4000.0;
         }
     }
 }
@@ -164,6 +185,27 @@ fn create_projection_matrix(window_width: f32, window_height: f32) -> Mat4 {
     nalgebra_glm::perspective(aspect_ratio, fov, near, far)
 }
 
+// Sistema LOD de 3 niveles para máximo rendimiento
+// Retorna: (0=ultra_low, 1=low, 2=high)
+fn check_lod(object_position: Vec3, object_radius: f32, camera: &Camera) -> usize {
+    // Calcular distancia del objeto a la cámara
+    let to_object = object_position - camera.position;
+    let distance = to_object.magnitude();
+    
+    // ULTRA LOW POLY: MUY cerca (12 vértices, 20 triángulos) - MÁXIMO RENDIMIENTO
+    if distance < object_radius * 4.0 {
+        return 0; // Ultra low poly
+    }
+    
+    // LOW POLY: Cerca-medio (482 vértices, 512 triángulos) - Buen rendimiento
+    if distance < object_radius * 12.0 {
+        return 1; // Low poly
+    }
+    
+    // HIGH POLY: Lejos (482 vértices, 960 triángulos) - Mejor calidad
+    2 // High poly
+}
+
 fn create_viewport_matrix(width: f32, height: f32) -> Mat4 {
     Mat4::new(
         width / 2.0, 0.0, 0.0, width / 2.0,
@@ -174,42 +216,64 @@ fn create_viewport_matrix(width: f32, height: f32) -> Mat4 {
 }
 
 fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Vertex]) {
-    // Vertex Shader Stage
-    let mut transformed_vertices = Vec::with_capacity(vertex_array.len());
-    for vertex in vertex_array {
-        let transformed = vertex_shader(vertex, uniforms);
-        transformed_vertices.push(transformed);
-    }
+    use rayon::prelude::*;
+    
+    // Vertex Shader Stage (PARALELO - 2-4x más rápido en multi-core)
+    let transformed_vertices: Vec<Vertex> = vertex_array
+        .par_iter()
+        .map(|vertex| vertex_shader(vertex, uniforms))
+        .collect();
 
-    // Primitive Assembly Stage
+    // Primitive Assembly Stage (secuencial - es muy rápido)
     let mut triangles = Vec::new();
     for i in (0..transformed_vertices.len()).step_by(3) {
         if i + 2 < transformed_vertices.len() {
-            triangles.push([
-                transformed_vertices[i].clone(),
-                transformed_vertices[i + 1].clone(),
-                transformed_vertices[i + 2].clone(),
-            ]);
+            // Backface culling TEMPRANO (antes de rasterizar)
+            let v0 = &transformed_vertices[i].transformed_position;
+            let v1 = &transformed_vertices[i + 1].transformed_position;
+            let v2 = &transformed_vertices[i + 2].transformed_position;
+            
+            // Producto cruz en 2D (determina orientación)
+            let edge1_x = v1.x - v0.x;
+            let edge1_y = v1.y - v0.y;
+            let edge2_x = v2.x - v0.x;
+            let edge2_y = v2.y - v0.y;
+            let cross = edge1_x * edge2_y - edge1_y * edge2_x;
+            
+            // Si cross <= 0, el triángulo está de espaldas - SALTAR
+            if cross > 0.0 {
+                triangles.push([
+                    transformed_vertices[i].clone(),
+                    transformed_vertices[i + 1].clone(),
+                    transformed_vertices[i + 2].clone(),
+                ]);
+            }
         }
     }
 
-    // Rasterization Stage and Fragment Processing
-    for tri in &triangles {
-        let frags = triangle(&tri[0], &tri[1], &tri[2]);
-        for mut frag in frags {
-            // Apply celestial shader
-            // Use the first vertex of the triangle as reference for position/normal
-            let shader_color = get_celestial_shader(uniforms.current_shader, &frag, &tri[0], uniforms);
-            frag.color = shader_color;
-            
-            // Fragment Processing Stage
-            let x = frag.position.x as usize;
-            let y = frag.position.y as usize;
-            if x < framebuffer.width && y < framebuffer.height {
-                let color = frag.color.to_hex();
-                framebuffer.set_current_color(color);
-                framebuffer.point(x, y, frag.depth);
-            }
+    // Rasterización y Fragment Shader (PARALELO con chunks)
+    // Procesar triángulos en paralelo y luego escribir al framebuffer
+    let fragments: Vec<_> = triangles
+        .par_iter()
+        .flat_map(|tri| {
+            let frags = triangle(&tri[0], &tri[1], &tri[2]);
+            frags.into_iter().map(|mut frag| {
+                // Aplicar shader
+                let shader_color = get_celestial_shader(uniforms.current_shader, &frag, &tri[0], uniforms);
+                frag.color = shader_color;
+                frag
+            }).collect::<Vec<_>>()
+        })
+        .collect();
+    
+    // Escribir fragmentos al framebuffer (secuencial para evitar race conditions en z-buffer)
+    for frag in fragments {
+        let x = frag.position.x as usize;
+        let y = frag.position.y as usize;
+        if x < framebuffer.width && y < framebuffer.height {
+            let color = frag.color.to_hex();
+            framebuffer.set_current_color(color);
+            framebuffer.point(x, y, frag.depth);
         }
     }
 }
@@ -268,8 +332,10 @@ impl CelestialObject {
 fn main() {
     let window_width = 1200;
     let window_height = 800;
-    let framebuffer_width = 1200;
-    let framebuffer_height = 800;
+    // Supersampling dinámico: factor cambia según la distancia de la cámara
+    let mut supersample_factor = 2usize;
+    let mut framebuffer_width = window_width * supersample_factor;
+    let mut framebuffer_height = window_height * supersample_factor;
     let frame_delay = Duration::from_millis(16);
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
@@ -287,49 +353,61 @@ fn main() {
     framebuffer.set_background_color(0x000011);
 
     // Cargar los modelos de esferas (rutas ajustadas a la carpeta `models/` en la raíz del proyecto)
-    let sphere_large = Obj::load("models/esfera_grande.obj").expect("Failed to load esfera_grande.obj");
-    let sphere_large_vertices = sphere_large.get_vertex_array();
-    
-    let sphere_small = Obj::load("models/esfera_chica.obj").expect("Failed to load esfera_chica.obj");
-    let sphere_small_vertices = sphere_small.get_vertex_array();
-
-    // Crear los cuerpos celestes con distancias orbitales bien separadas
+    // Cargar modelo LOW POLY optimizado (178 vértices, 192 caras)
+    let sphere_low = Obj::load("models/Esfera_Low.obj").expect("Failed to load Esfera_Low.obj");
+    let sphere_low_vertices = sphere_low.get_vertex_array();    // Crear los cuerpos celestes con distancias orbitales bien separadas
+    // TODOS usan esfera_chica (LOW POLY) para MEJOR RENDIMIENTO
     let mut celestial_objects = vec![
-        // Sol (centro) - esfera grande
-        CelestialObject::new(CelestialBody::Sun, Vec3::new(600.0, 400.0, 0.0), 80.0, true)
+        // Sol (centro) - esfera LOW
+        CelestialObject::new(CelestialBody::Sun, Vec3::new(600.0, 400.0, 0.0), 80.0, false)
             .with_rotation_speed(Vec3::new(0.0, 0.005, 0.0)),
         
-        // Tierra - esfera chica
+        // Mercurio (Lava Planet) - esfera LOW, muy cerca del sol
+        CelestialObject::new(CelestialBody::LavaPlanet, Vec3::new(600.0, 400.0, 0.0), 15.0, false)
+            .with_orbit(150.0, 0.47)
+            .with_rotation_speed(Vec3::new(0.0, 0.01, 0.0)),
+        
+        // Tierra - esfera LOW
         CelestialObject::new(CelestialBody::Earth, Vec3::new(600.0, 400.0, 0.0), 28.0, false)
             .with_orbit(250.0, 0.35)
             .with_rotation_speed(Vec3::new(0.0, 0.02, 0.0)),
         
-        // Marte - esfera chica (más separado)
+        // Marte - esfera LOW (más separado)
         CelestialObject::new(CelestialBody::Mars, Vec3::new(600.0, 400.0, 0.0), 20.0, false)
             .with_orbit(450.0, 0.24)
             .with_rotation_speed(Vec3::new(0.0, 0.02, 0.0)),
         
-        // Júpiter - esfera grande (bien separado)
-        CelestialObject::new(CelestialBody::Jupiter, Vec3::new(600.0, 400.0, 0.0), 55.0, true)
+        // Júpiter - esfera LOW (bien separado)
+        CelestialObject::new(CelestialBody::Jupiter, Vec3::new(600.0, 400.0, 0.0), 55.0, false)
             .with_orbit(700.0, 0.13)
             .with_rotation_speed(Vec3::new(0.0, 0.03, 0.0)),
         
-        // Saturno - esfera grande (el más lejano, muy separado)
-        CelestialObject::new(CelestialBody::Saturn, Vec3::new(600.0, 400.0, 0.0), 50.0, true)
+        // Saturno - esfera LOW (el más lejano, muy separado)
+        CelestialObject::new(CelestialBody::Saturn, Vec3::new(600.0, 400.0, 0.0), 50.0, false)
             .with_orbit(1000.0, 0.08)
             .with_rotation_speed(Vec3::new(0.0, 0.025, 0.0)),
+        
+        // Urano (Ice Planet) - esfera LOW, muy lejano
+        CelestialObject::new(CelestialBody::IcePlanet, Vec3::new(600.0, 400.0, 0.0), 42.0, false)
+            .with_orbit(1300.0, 0.06)
+            .with_rotation_speed(Vec3::new(0.0, 0.022, 0.0)),
+        
+        // Neptuno (Alien Planet) - esfera LOW, el más lejano
+        CelestialObject::new(CelestialBody::AlienPlanet, Vec3::new(600.0, 400.0, 0.0), 40.0, false)
+            .with_orbit(1600.0, 0.04)
+            .with_rotation_speed(Vec3::new(0.0, 0.02, 0.0)),
     ];
 
-    // Luna de la Tierra - esfera chica (muy cerca de la Tierra)
+    // Luna de la Tierra - esfera chica (SUPER CERCA de la Tierra)
     let mut earth_moon = CelestialObject::new(CelestialBody::Moon, Vec3::new(600.0, 400.0, 0.0), 8.0, false)
-        .with_orbit(45.0, 1.2)  // Órbita más pequeña y más rápida
+        .with_orbit(15.0, 1.2)  // Órbita SUPER cercana (15 unidades) - la luna está bastante cerca
         .with_rotation_speed(Vec3::new(0.0, 0.01, 0.0));
 
     let mut time = 0.0f32;
     
-    // Inicializar cámara - mucho más alejada para ver todo el sistema expandido
+    // Inicializar cámara - MUCHO más alejada para ver todo el sistema expandido con los planetas exteriores
     let mut camera = Camera::new(
-        Vec3::new(600.0, 600.0, 1600.0),  // posición de la cámara (mucho más alejada y elevada)
+        Vec3::new(600.0, 800.0, 2200.0),  // posición de la cámara (muy alejada y elevada)
         Vec3::new(600.0, 400.0, 0.0)       // mirando al centro (donde está el sol)
     );
 
@@ -341,6 +419,27 @@ fn main() {
         }
 
         handle_input(&window, &mut camera);
+
+        // Calcular distancia de la cámara al objetivo
+        let distance_to_target = (camera.position - camera.target).magnitude();
+        
+        // Decidir factor de supersampling basado en distancia (con histéresis para evitar parpadeo)
+        let desired_supersample = if distance_to_target > 1500.0 {
+            2usize  // Lejos: alta calidad
+        } else if distance_to_target > 600.0 {
+            1usize  // Media distancia: calidad normal
+        } else {
+            1usize  // Cerca: sin supersampling (rendimiento)
+        };
+
+        // Solo cambiar el framebuffer si el factor cambia (para evitar saltos)
+        if desired_supersample != supersample_factor {
+            supersample_factor = desired_supersample;
+            framebuffer_width = window_width * supersample_factor;
+            framebuffer_height = window_height * supersample_factor;
+            framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
+            framebuffer.set_background_color(0x000011);
+        }
 
         framebuffer.clear();
 
@@ -354,13 +453,24 @@ fn main() {
         }
 
         // Actualizar luna de la Tierra
-        earth_moon.orbit_center = celestial_objects[1].translation; // La Tierra es el índice 1
+    earth_moon.orbit_center = celestial_objects[2].translation; // La Tierra es el índice 2 (después de Sol y Mercurio/Lava)
         earth_moon.update(time);
 
         // La posición del Sol es la fuente de luz
         let light_position = celestial_objects[0].translation;
-        
-        // Renderizar todos los cuerpos
+
+        // Nivel de detalle ULTRA AGRESIVO basado en distancia (más cerca = menos detalle para MÁXIMO rendimiento)
+        let detail_level = if distance_to_target > 1500.0 {
+            1.0  // Lejos: máximo detalle
+        } else if distance_to_target > 800.0 {
+            0.65 // Media: buen detalle
+        } else if distance_to_target > 400.0 {
+            0.45 // Cerca: detalle reducido
+        } else if distance_to_target > 200.0 {
+            0.3  // Muy cerca: bajo detalle
+        } else {
+            0.15 // ULTRA CERCA: mínimo detalle absoluto para MÁXIMO rendimiento
+        };        // Renderizar todos los cuerpos usando Esfera_Low.obj (178 vértices, 192 caras - MÁXIMO rendimiento)
         for celestial_obj in &celestial_objects {
             let model_matrix = create_model_matrix(
                 celestial_obj.translation,
@@ -375,18 +485,14 @@ fn main() {
                 current_shader: celestial_obj.body_type,
                 light_position,
                 camera_position: camera.position,
+                detail_level,
             };
             
-            // Usar esfera grande o chica según el planeta
-            let vertices = if celestial_obj.use_large_sphere {
-                &sphere_large_vertices
-            } else {
-                &sphere_small_vertices
-            };
-            render(&mut framebuffer, &uniforms, vertices);
+            // TODOS usan Esfera_Low.obj (178 vértices, 192 caras) para MÁXIMO rendimiento
+            render(&mut framebuffer, &uniforms, &sphere_low_vertices);
         }
 
-        // Renderizar luna
+        // Renderizar luna (SIEMPRE - sin frustum culling)
         let moon_matrix = create_model_matrix(
             earth_moon.translation,
             earth_moon.scale,
@@ -400,34 +506,68 @@ fn main() {
             current_shader: CelestialBody::Moon,
             light_position,
             camera_position: camera.position,
+            detail_level,
         };
-        render(&mut framebuffer, &moon_uniforms, &sphere_small_vertices);
+        // La luna usa Esfera_Low.obj (máximo rendimiento)
+        render(&mut framebuffer, &moon_uniforms, &sphere_low_vertices);
 
-        // Renderizar anillos de Saturno
-        render_saturn_rings(&mut framebuffer, &celestial_objects[4], time, view_matrix, projection_matrix, light_position, camera.position, &sphere_large_vertices);
+        // Renderizar anillos de Saturno (SIEMPRE - sin frustum culling)
+        render_saturn_rings(
+            &mut framebuffer,
+            &celestial_objects[5],
+            time,
+            view_matrix,
+            projection_matrix,
+            light_position,
+            camera.position,
+            detail_level,
+            &sphere_low_vertices,
+        );
 
-        window
-            .update_with_buffer(&framebuffer.buffer, framebuffer_width, framebuffer_height)
-            .unwrap();
+        // Renderizar anillos del planeta Alien (índice 7)
+        render_alien_rings(
+            &mut framebuffer,
+            &celestial_objects[7],
+            time,
+            view_matrix,
+            projection_matrix,
+            light_position,
+            camera.position,
+            detail_level,
+            &sphere_low_vertices,
+        );
+
+        if supersample_factor > 1 {
+            // Aplicar downsampling para anti-aliasing
+            let downsampled = downsample_buffer(&framebuffer.buffer, framebuffer_width, framebuffer_height, window_width, window_height);
+            window
+                .update_with_buffer(&downsampled, window_width, window_height)
+                .unwrap();
+        } else {
+            window
+                .update_with_buffer(&framebuffer.buffer, framebuffer_width, framebuffer_height)
+                .unwrap();
+        }
 
         std::thread::sleep(frame_delay);
     }
 }
 
 fn render_saturn_rings(
-    framebuffer: &mut Framebuffer, 
-    saturn: &CelestialObject, 
-    time: f32, 
+    framebuffer: &mut Framebuffer,
+    saturn: &CelestialObject,
+    time: f32,
     view_matrix: Mat4,
     projection_matrix: Mat4,
     light_position: Vec3,
     camera_position: Vec3,
-    vertex_arrays: &[Vertex]
+    detail_level: f32,
+    vertex_arrays: &[Vertex],
 ) {
-    // Renderizar anillos como un disco plano
-    let ring_scale = saturn.scale * 1.8;
+    // Renderizar anillos grandes y prominentes de Saturno
+    let ring_scale = saturn.scale * 2.5; // Anillos más grandes y visibles
     let ring_translation = Vec3::new(saturn.translation.x, saturn.translation.y, saturn.translation.z);
-    let ring_rotation = Vec3::new(PI / 4.0, saturn.rotation.y, 0.0); // Inclinado
+    let ring_rotation = Vec3::new(PI / 4.5, saturn.rotation.y, 0.0); // Inclinación más suave para verse mejor
 
     let model_matrix = create_model_matrix(ring_translation, ring_scale, ring_rotation);
     let uniforms = Uniforms {
@@ -438,10 +578,87 @@ fn render_saturn_rings(
         current_shader: CelestialBody::Ring,
         light_position,
         camera_position,
+        detail_level,
     };
 
     // Renderizar con el shader de anillos
     render(framebuffer, &uniforms, vertex_arrays);
+}
+
+fn render_alien_rings(
+    framebuffer: &mut Framebuffer,
+    alien_planet: &CelestialObject,
+    time: f32,
+    view_matrix: Mat4,
+    projection_matrix: Mat4,
+    light_position: Vec3,
+    camera_position: Vec3,
+    detail_level: f32,
+    vertex_arrays: &[Vertex],
+) {
+    // Renderizar anillos ENORMES del planeta alien - MUY visibles y dramáticos
+    let ring_scale = alien_planet.scale * 4.0; // Anillos ENORMES (4x el tamaño del planeta!)
+    let ring_translation = Vec3::new(alien_planet.translation.x, alien_planet.translation.y, alien_planet.translation.z);
+    // Rotación similar a Saturno pero con más inclinación para verse mejor desde cualquier ángulo
+    let ring_rotation = Vec3::new(PI / 3.5, alien_planet.rotation.y + time * 0.001, PI / 8.0);
+
+    let model_matrix = create_model_matrix(ring_translation, ring_scale, ring_rotation);
+    let uniforms = Uniforms {
+        model_matrix,
+        view_matrix,
+        projection_matrix,
+        time,
+        current_shader: CelestialBody::Ring, // Usar el shader de anillos (tiene transparencia)
+        light_position,
+        camera_position,
+        detail_level,
+    };
+
+    // Renderizar con el shader de anillos
+    render(framebuffer, &uniforms, vertex_arrays);
+}
+
+// Función para downsample el framebuffer (anti-aliasing)
+fn downsample_buffer(high_res_buffer: &[u32], high_width: usize, high_height: usize, 
+                     low_width: usize, low_height: usize) -> Vec<u32> {
+    let mut low_res_buffer = vec![0u32; low_width * low_height];
+    let scale_x = high_width / low_width;
+    let scale_y = high_height / low_height;
+    
+    for y in 0..low_height {
+        for x in 0..low_width {
+            let mut r_sum = 0u32;
+            let mut g_sum = 0u32;
+            let mut b_sum = 0u32;
+            let mut count = 0u32;
+            
+            // Promediar los píxeles del área correspondiente
+            for dy in 0..scale_y {
+                for dx in 0..scale_x {
+                    let hx = x * scale_x + dx;
+                    let hy = y * scale_y + dy;
+                    
+                    if hx < high_width && hy < high_height {
+                        let pixel = high_res_buffer[hy * high_width + hx];
+                        r_sum += (pixel >> 16) & 0xFF;
+                        g_sum += (pixel >> 8) & 0xFF;
+                        b_sum += pixel & 0xFF;
+                        count += 1;
+                    }
+                }
+            }
+            
+            // Calcular promedio
+            if count > 0 {
+                let r = (r_sum / count) & 0xFF;
+                let g = (g_sum / count) & 0xFF;
+                let b = (b_sum / count) & 0xFF;
+                low_res_buffer[y * low_width + x] = (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+    
+    low_res_buffer
 }
 
 fn handle_input(window: &Window, camera: &mut Camera) {

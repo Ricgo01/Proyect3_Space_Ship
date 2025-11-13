@@ -21,9 +21,30 @@ pub fn triangle(v1: &Vertex, v2: &Vertex, v3: &Vertex) -> Vec<Fragment> {
 
   let (min_x, min_y, max_x, max_y) = calculate_bounding_box(&a, &b, &c);
 
+  // Early rejection: si el bounding box es muy pequeño o inválido, saltar
+  if max_x < min_x || max_y < min_y {
+    return fragments;
+  }
+
+  // Limitar el bounding box a un tamaño razonable para evitar procesar triángulos gigantes
+  let box_width = max_x - min_x;
+  let box_height = max_y - min_y;
+  if box_width > 5000 || box_height > 5000 {
+    return fragments; // Triángulo demasiado grande, probablemente fuera de pantalla
+  }
+
   let light_dir = Vec3::new(0.0, 0.0, -1.0);
 
   let triangle_area = edge_function(&a, &b, &c);
+  
+  // Early rejection: si el área es casi cero, el triángulo es degenerado
+  if triangle_area.abs() < 0.0001 {
+    return fragments;
+  }
+
+  // Pre-reservar espacio aproximado basado en el área del bounding box
+  let estimated_fragments = ((box_width * box_height) / 4) as usize;
+  fragments.reserve(estimated_fragments.min(1000));
 
   // Iterate over each pixel in the bounding box
   for y in min_y..=max_y {

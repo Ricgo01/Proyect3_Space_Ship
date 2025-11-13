@@ -4,7 +4,7 @@ use crate::fragment::Fragment;
 use crate::vertex::Vertex;
 use crate::Uniforms;
 
-// ============= FUNCIONES DE NOISE =============
+// ============= FUNCIONES DE NOISE MEJORADAS =============
 
 // Función auxiliar para ruido pseudo-aleatorio
 fn noise(x: f32, y: f32, z: f32) -> f32 {
@@ -12,28 +12,79 @@ fn noise(x: f32, y: f32, z: f32) -> f32 {
     a.fract()
 }
 
-// Función para ruido fractal (Fractal Brownian Motion)
+// Interpolación suave (smoothstep) para transiciones más naturales
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+// Ruido interpolado linealmente para reducir pixelación
+fn noise_interpolated(x: f32, y: f32, z: f32) -> f32 {
+    let xi = x.floor();
+    let yi = y.floor();
+    let zi = z.floor();
+    
+    let xf = x - xi;
+    let yf = y - yi;
+    let zf = z - zi;
+    
+    // Interpolar con smoothstep para transiciones más suaves
+    let u = smoothstep(xf);
+    let v = smoothstep(yf);
+    let w = smoothstep(zf);
+    
+    // 8 esquinas del cubo
+    let n000 = noise(xi, yi, zi);
+    let n100 = noise(xi + 1.0, yi, zi);
+    let n010 = noise(xi, yi + 1.0, zi);
+    let n110 = noise(xi + 1.0, yi + 1.0, zi);
+    let n001 = noise(xi, yi, zi + 1.0);
+    let n101 = noise(xi + 1.0, yi, zi + 1.0);
+    let n011 = noise(xi, yi + 1.0, zi + 1.0);
+    let n111 = noise(xi + 1.0, yi + 1.0, zi + 1.0);
+    
+    // Interpolación trilinear
+    let x00 = n000 * (1.0 - u) + n100 * u;
+    let x10 = n010 * (1.0 - u) + n110 * u;
+    let x01 = n001 * (1.0 - u) + n101 * u;
+    let x11 = n011 * (1.0 - u) + n111 * u;
+    
+    let y0 = x00 * (1.0 - v) + x10 * v;
+    let y1 = x01 * (1.0 - v) + x11 * v;
+    
+    y0 * (1.0 - w) + y1 * w
+}
+
+// Función para ruido fractal (Fractal Brownian Motion) con interpolación
 fn fbm(x: f32, y: f32, z: f32, octaves: u32) -> f32 {
     let mut value = 0.0;
     let mut amplitude = 0.5;
     let mut frequency = 1.0;
+    let mut max_value = 0.0;
     
     for _ in 0..octaves {
-        value += noise(x * frequency, y * frequency, z * frequency) * amplitude;
+        value += noise_interpolated(x * frequency, y * frequency, z * frequency) * amplitude;
+        max_value += amplitude;
         frequency *= 2.0;
         amplitude *= 0.5;
     }
     
-    value
+    // Normalizar para mantener el rango [0, 1]
+    if max_value > 0.0 {
+        value / max_value
+    } else {
+        value
+    }
 }
 
-// Worley/Cellular noise para efectos de células
+// Worley/Cellular noise mejorado para efectos de células más suaves
 fn worley_noise(x: f32, y: f32, z: f32) -> f32 {
     let xi = x.floor() as i32;
     let yi = y.floor() as i32;
     let zi = z.floor() as i32;
     
-    let mut min_dist: f32 = 100.0; // Fix: especificar tipo explícitamente
+    let mut min_dist: f32 = 100.0;
+    let mut second_min_dist: f32 = 100.0;
     
     for i in -1..=1 {
         for j in -1..=1 {
@@ -51,37 +102,87 @@ fn worley_noise(x: f32, y: f32, z: f32) -> f32 {
                 let dz = point_z - z;
                 let dist = (dx*dx + dy*dy + dz*dz).sqrt();
                 
-                min_dist = min_dist.min(dist);
+                if dist < min_dist {
+                    second_min_dist = min_dist;
+                    min_dist = dist;
+                } else if dist < second_min_dist {
+                    second_min_dist = dist;
+                }
             }
         }
     }
     
-    min_dist
+    // Usar la diferencia entre las dos distancias más cercanas para bordes más suaves
+    (second_min_dist - min_dist).clamp(0.0, 1.0)
 }
 
-// Turbulencia para efectos caóticos
+// Turbulencia para efectos caóticos con interpolación suave
 fn turbulence(x: f32, y: f32, z: f32, octaves: u32) -> f32 {
     let mut value = 0.0;
     let mut amplitude = 1.0;
     let mut frequency = 1.0;
+    let mut max_value = 0.0;
     
     for _ in 0..octaves {
-        value += (fbm(x * frequency, y * frequency, z * frequency, 2) - 0.5).abs() * amplitude;
+        let n = noise_interpolated(x * frequency, y * frequency, z * frequency);
+        value += (n - 0.5).abs() * amplitude;
+        max_value += amplitude * 0.5;
         frequency *= 2.0;
         amplitude *= 0.5;
     }
     
-    value
+    // Normalizar
+    if max_value > 0.0 {
+        value / max_value
+    } else {
+        value
+    }
 }
 
-// Helper para mezclar colores
+// Helper para mezclar colores con interpolación suave
 fn mix_color(c1: Color, c2: Color, t: f32) -> Color {
-    let t = t.clamp(0.0, 1.0);
+    let t = smoothstep(t.clamp(0.0, 1.0)); // Usar smoothstep para transiciones más naturales
     Color::from_float(
         c1.to_float().0 * (1.0 - t) + c2.to_float().0 * t,
         c1.to_float().1 * (1.0 - t) + c2.to_float().1 * t,
         c1.to_float().2 * (1.0 - t) + c2.to_float().2 * t,
     )
+}
+
+// Mezclar múltiples colores con pesos
+fn mix_colors_multi(colors: &[Color], weights: &[f32]) -> Color {
+    let mut r = 0.0;
+    let mut g = 0.0;
+    let mut b = 0.0;
+    let mut total_weight = 0.0;
+    
+    for (color, &weight) in colors.iter().zip(weights.iter()) {
+        let (cr, cg, cb) = color.to_float();
+        r += cr * weight;
+        g += cg * weight;
+        b += cb * weight;
+        total_weight += weight;
+    }
+    
+    if total_weight > 0.0 {
+        Color::from_float(r / total_weight, g / total_weight, b / total_weight)
+    } else {
+        colors[0]
+    }
+}
+
+fn scale_octaves(base: u32, detail_level: f32) -> u32 {
+    let detail = detail_level.clamp(0.4, 1.0);
+    let scaled = (base as f32 * detail).floor() as u32;
+    scaled.max(1).min(base)
+}
+
+fn fbm_adaptive(x: f32, y: f32, z: f32, base_octaves: u32, detail_level: f32) -> f32 {
+    fbm(x, y, z, scale_octaves(base_octaves, detail_level))
+}
+
+fn turbulence_adaptive(x: f32, y: f32, z: f32, base_octaves: u32, detail_level: f32) -> f32 {
+    turbulence(x, y, z, scale_octaves(base_octaves, detail_level))
 }
 
 // Función auxiliar para iluminación Phong
@@ -186,42 +287,80 @@ pub fn earth_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifo
     let normal = vertex.transformed_normal.normalize();
     let fragment_pos = vertex.transformed_position;
     
-    // Capa 1: Océanos con profundidad variable
-    let ocean_depth = fbm(pos.x * 4.0, pos.y * 4.0, pos.z * 4.0, 3);
-    let deep_ocean = Color::from_float(0.02, 0.08, 0.25);
-    let shallow_ocean = Color::from_float(0.1, 0.3, 0.5);
+    // OCÉANOS REALISTAS - Colores tipo Tierra real
+    let ocean_depth = fbm(pos.x * 3.5, pos.y * 3.5, pos.z * 3.5, 4);
+    let ocean_waves = fbm(pos.x * 18.0, pos.y * 18.0, pos.z * 18.0, 2) * 0.1;
     
-    // Capa 2: Continentes con Worley noise para forma realista
-    let land_noise = worley_noise(pos.x * 1.5, pos.y * 1.5, pos.z * 1.5);
-    let land_detail = fbm(pos.x * 3.0, pos.y * 3.0, pos.z * 3.0, 4);
-    let is_land = land_noise > 0.45 || land_detail > 0.6;
+    // Océanos profundos azul oscuro, océanos poco profundos más turquesa
+    let deep_ocean = Color::from_float(0.01, 0.05, 0.15);      // Azul muy oscuro
+    let shallow_ocean = Color::from_float(0.05, 0.25, 0.45);   // Azul medio
     
-    // Capa 3: Biomas terrestres
-    let biome_noise = fbm(pos.x * 2.5, pos.y * 2.5, pos.z * 2.5, 3);
-    let altitude = fbm(pos.x * 5.0, pos.y * 5.0, pos.z * 5.0, 2);
+    // CONTINENTES REALISTAS - Usar múltiples capas de noise para formas irregulares
+    // Combinar Worley + FBM para crear continentes más naturales
+    let continent_base = worley_noise(pos.x * 1.2, pos.y * 1.2, pos.z * 1.2);
+    let continent_detail = fbm(pos.x * 2.5, pos.y * 2.5, pos.z * 2.5, 5);
+    let continent_variation = fbm(pos.x * 1.8, pos.y * 1.8, pos.z * 1.8, 4);
     
-    let forest = Color::from_float(0.15, 0.4, 0.15);
-    let plains = Color::from_float(0.4, 0.5, 0.2);
-    let desert = Color::from_float(0.75, 0.65, 0.35);
-    let mountain = Color::from_float(0.5, 0.5, 0.5);
-    let snow = Color::from_float(0.9, 0.9, 0.95);
+    // Ajustar umbral para tener ~30% de tierra (como la Tierra real)
+    let land_threshold = 0.48 + continent_variation * 0.08;
+    let is_land = (continent_base > land_threshold) || (continent_detail > 0.62 && continent_base > 0.42);
+    
+    // BIOMAS TERRESTRES REALISTAS - Colores tipo Tierra
+    let biome_noise = fbm(pos.x * 2.8, pos.y * 2.8, pos.z * 2.8, 4);
+    let altitude = fbm(pos.x * 4.5, pos.y * 4.5, pos.z * 4.5, 3);
+    let coastal_distance = fbm(pos.x * 6.0, pos.y * 6.0, pos.z * 6.0, 3);
+    
+    // Colores más realistas de la Tierra
+    let forest = Color::from_float(0.13, 0.38, 0.13);        // Verde bosque oscuro
+    let plains = Color::from_float(0.42, 0.48, 0.22);        // Verde/amarillo praderas
+    let desert = Color::from_float(0.76, 0.60, 0.35);        // Arena/desierto cálido
+    let mountain = Color::from_float(0.45, 0.40, 0.35);      // Marrón/gris montaña
+    let snow = Color::from_float(0.95, 0.95, 0.98);          // Nieve brillante
+    let tundra = Color::from_float(0.55, 0.50, 0.45);        // Tundra ártica
+    let beach_sand = Color::from_float(0.88, 0.82, 0.65);    // Arena de playa
     
     let mut base_color = if is_land {
-        if altitude > 0.75 {
-            if pos.y.abs() > 0.6 || altitude > 0.85 {
-                snow
+        // BIOMAS REALISTAS con transiciones suaves
+        let latitude_factor = pos.y.abs(); // 0 = ecuador, 1 = polos
+        
+        if altitude > 0.78 {
+            // MONTAÑAS ALTAS con nieve
+            if altitude > 0.88 || latitude_factor > 0.65 {
+                snow // Nieve permanente
             } else {
-                mountain
+                mix_color(mountain, snow, (altitude - 0.78) * 4.0) // Transición montaña-nieve
             }
-        } else if biome_noise > 0.6 {
-            desert
-        } else if biome_noise > 0.4 {
-            plains
+        } else if latitude_factor > 0.55 {
+            // ZONAS ÁRTICAS/ANTÁRTICAS (norte/sur lejanos)
+            if altitude > 0.65 {
+                mix_color(tundra, snow, (latitude_factor - 0.55) * 3.0) // Tundra nevada
+            } else {
+                mix_color(plains, tundra, (latitude_factor - 0.55) * 4.0) // Pradera fría
+            }
+        } else if biome_noise > 0.65 {
+            // DESIERTOS (África, Arabia, Australia)
+            let desert_intensity = (biome_noise - 0.65) * 2.8;
+            mix_color(plains, desert, desert_intensity.clamp(0.0, 1.0))
+        } else if biome_noise > 0.45 {
+            // PRADERAS Y SABANAS (transición)
+            let plains_blend = (biome_noise - 0.45) * 5.0;
+            mix_color(forest, plains, plains_blend.clamp(0.0, 1.0))
         } else {
-            forest
+            // BOSQUES Y SELVAS (zonas húmedas y ecuatoriales)
+            let forest_variation = biome_noise * 2.2;
+            forest * (0.7 + forest_variation * 0.3)
         }
     } else {
-        mix_color(deep_ocean, shallow_ocean, ocean_depth)
+        // OCÉANO con profundidad y costas
+        let ocean_color = mix_color(deep_ocean, shallow_ocean, ocean_depth + ocean_waves);
+        
+        // Zonas costeras con arena (transición océano-tierra)
+        if coastal_distance > 0.56 && continent_base > 0.40 && continent_base < land_threshold {
+            let coast_blend = (coastal_distance - 0.56) * 6.0;
+            mix_color(ocean_color, beach_sand, coast_blend.clamp(0.0, 0.7))
+        } else {
+            ocean_color
+        }
     };
     
     // Capa 4: Casquetes polares
@@ -245,113 +384,261 @@ pub fn earth_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifo
         shininess
     );
     
-    // Capa 5: Sistema de nubes mejorado
-    let cloud_layer1 = fbm(
-        pos.x * 5.0 + uniforms.time * 0.08,
-        pos.y * 5.0,
-        pos.z * 5.0 - uniforms.time * 0.05,
+    // NUBES REALISTAS - Sistema de 3 capas que se mueven
+    // Nubes grandes (sistemas climáticos)
+    let cloud_large = fbm(
+        pos.x * 3.5 + uniforms.time * 0.05,
+        pos.y * 3.5,
+        pos.z * 3.5 - uniforms.time * 0.03,
         4
     );
-    let cloud_layer2 = fbm(
-        pos.x * 8.0 - uniforms.time * 0.06,
-        pos.y * 8.0,
-        pos.z * 8.0,
+    // Nubes medianas (formaciones)
+    let cloud_medium = fbm(
+        pos.x * 7.0 - uniforms.time * 0.07,
+        pos.y * 7.0,
+        pos.z * 7.0 + uniforms.time * 0.04,
         3
     );
-    let cloud_intensity = ((cloud_layer1 * 0.6 + cloud_layer2 * 0.4) - 0.5).max(0.0) * 2.5;
+    // Detalles finos (cirrus, etc)
+    let cloud_fine = fbm(
+        pos.x * 12.0,
+        pos.y * 12.0,
+        pos.z * 12.0,
+        2
+    ) * 0.25;
     
+    // Combinar capas (más nubes en zonas ecuatoriales)
+    let latitude_cloud_factor = 1.0 - (pos.y.abs() * 0.5); // Más nubes cerca del ecuador
+    let cloud_combined = (cloud_large * 0.5 + cloud_medium * 0.3 + cloud_fine) * latitude_cloud_factor;
+    let cloud_intensity = (cloud_combined - 0.45).max(0.0) * 2.0;
+    
+    // Iluminación de nubes (sombras realistas)
     let light_dir = (uniforms.light_position - fragment_pos).normalize();
-    let cloud_lighting = normal.dot(&light_dir).max(0.0) * 0.7 + 0.3; // Fix: remover paréntesis innecesarios
-    let cloud_color = Color::from_float(1.0, 1.0, 1.0) * cloud_lighting;
+    let cloud_lighting = (normal.dot(&light_dir).max(0.0) * 0.75 + 0.25).min(1.0);
+    let cloud_color = Color::from_float(0.98, 0.98, 1.0) * cloud_lighting;
     
-    base_color = mix_color(base_color, cloud_color, cloud_intensity.min(0.75));
+    // Aplicar nubes con transparencia variable
+    base_color = mix_color(base_color, cloud_color, (cloud_intensity * 0.7).min(0.75));
     
-    // Capa 6: Atmósfera con dispersión Rayleigh
+    // ATMÓSFERA AZUL REALISTA - Efecto Rayleigh scattering
     let view_dir = (uniforms.camera_position - fragment_pos).normalize();
-    let fresnel = (1.0 - normal.dot(&view_dir).abs()).powf(3.5);
-    let atmosphere_color = Color::from_float(0.4, 0.6, 1.0);
+    let fresnel = (1.0 - normal.dot(&view_dir).abs()).powf(2.8); // Borde atmosférico
     
-    mix_color(base_color, atmosphere_color, fresnel * 0.5)
+    // Color de atmósfera terrestre (azul cielo)
+    let atmosphere_color = Color::from_float(0.35, 0.55, 0.95);
+    
+    // Agregar brillo atmosférico más intenso en el borde
+    let atmosphere_glow = fresnel * 0.45;
+    
+    mix_color(base_color, atmosphere_color, atmosphere_glow)
 }
 
 // ============= GIGANTE GASEOSO (TIPO JÚPITER) =============
-// Shader con 5 capas: bandas, turbulencias, gran mancha roja, tormentas secundarias, brillo
+// Shader con 7+ capas: atmósfera profunda, bandas en múltiples alturas, turbulencias,
+// gran mancha roja, tormentas secundarias, scattering, brillo volumétrico
 pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
     let pos = vertex.position;
     let normal = vertex.transformed_normal.normalize();
     let fragment_pos = vertex.transformed_position;
+    let view_dir = (uniforms.camera_position - fragment_pos).normalize();
+    let detail = uniforms.detail_level;
+
+    // Calcular profundidad atmosférica (más denso en el centro, menos en los bordes)
+    let edge_factor = normal.dot(&view_dir).abs();
+    let atmospheric_depth = (1.0 - edge_factor).powf(0.5);
+
+    // ===== CAPA 1: Atmósfera profunda base (colores más precisos de Júpiter) =====
+    // Júpiter tiene tonos naranjas, cremas y marrones
+    let deep_atm_noise = fbm_adaptive(pos.x * 2.5, pos.y * 2.5, pos.z * 2.5, 4, detail);
+    let deep_color1 = Color::from_float(0.82, 0.58, 0.35); // Naranja cálido
+    let deep_color2 = Color::from_float(0.68, 0.45, 0.28); // Marrón dorado
+    let deep_layer = mix_color(deep_color1, deep_color2, deep_atm_noise);
+
+    // ===== CAPA 2: Bandas atmosféricas horizontales (como en la referencia de Three.js) =====
+    // Júpiter tiene bandas muy pronunciadas con mucha turbulencia
+    let band_freq = 14.0; // Más bandas para mayor realismo
     
-    // Capa 1: Bandas atmosféricas principales con más detalle
-    let band_freq = 10.0;
-    let band_distortion = turbulence(pos.x * 3.0, pos.y * 2.0, pos.z * 3.0, 3) * 0.8;
-    let band_pattern = ((pos.y + band_distortion) * band_freq).sin();
-    
-    let band_color1 = Color::from_float(0.9, 0.7, 0.5);
-    let band_color2 = Color::from_float(0.7, 0.5, 0.3);
-    let band_color3 = Color::from_float(0.85, 0.65, 0.45);
-    let band_mix = (band_pattern + 1.0) / 2.0;
-    
-    let mut base_color = if band_mix > 0.66 {
+    // Banda lenta (ecuatorial)
+    let slow_distortion = turbulence_adaptive(
+        pos.x * 3.0 + uniforms.time * 0.015,
+        pos.y * 2.0,
+        pos.z * 3.0 - uniforms.time * 0.012,
+        5, // Más octavas para bandas suaves
+        detail,
+    ) * 1.5;
+    let slow_band = ((pos.y + slow_distortion) * band_freq * 0.7).sin();
+
+    // Banda media (zonas templadas)
+    let mid_distortion = turbulence_adaptive(
+        pos.x * 4.0 + uniforms.time * 0.028,
+        pos.y * 3.0,
+        pos.z * 4.0 - uniforms.time * 0.022,
+        5,
+        detail,
+    ) * 1.1;
+    let mid_band = ((pos.y + mid_distortion) * band_freq).sin();
+
+    // Banda rápida (zonas polares)
+    let fast_distortion = turbulence_adaptive(
+        pos.x * 5.5 + uniforms.time * 0.045,
+        pos.y * 3.8,
+        pos.z * 5.5 - uniforms.time * 0.038,
+        4,
+        detail,
+    ) * 0.8;
+    let fast_band = ((pos.y + fast_distortion) * band_freq * 1.3).sin();
+
+    // Colores más precisos de Júpiter (inspirados en imágenes reales)
+    let band_color1 = Color::from_float(0.98, 0.88, 0.72); // Zona clara (crema brillante)
+    let band_color2 = Color::from_float(0.75, 0.52, 0.32); // Cinturón oscuro (marrón rojizo)
+    let band_color3 = Color::from_float(0.92, 0.78, 0.58); // Zona intermedia (naranja suave)
+    let band_color4 = Color::from_float(0.68, 0.45, 0.28); // Cinturón profundo (marrón oscuro)
+
+    let combined_band = slow_band * 0.4 + mid_band * 0.35 + fast_band * 0.25;
+    let band_value = (combined_band + 1.0) / 2.0;
+
+    let band_color = if band_value > 0.75 {
         band_color1
-    } else if band_mix > 0.33 {
-        mix_color(band_color2, band_color3, (band_mix - 0.33) * 3.0)
+    } else if band_value > 0.5 {
+        mix_color(band_color3, band_color1, (band_value - 0.5) * 4.0)
+    } else if band_value > 0.25 {
+        mix_color(band_color2, band_color3, (band_value - 0.25) * 4.0)
     } else {
-        band_color2
+        mix_color(band_color4, band_color2, band_value * 4.0)
+    };
+
+    let mut base_color = mix_color(deep_layer, band_color, 0.4 + atmospheric_depth * 0.6);
+
+    // ===== CAPA 3: Turbulencias y vórtices (tormentas joviales) =====
+    // Júpiter tiene miles de tormentas, vamos a simular múltiples escalas
+    let large_vortex = turbulence_adaptive(
+        pos.x * 7.0 + uniforms.time * 0.035,
+        pos.y * 5.0,
+        pos.z * 7.0 - uniforms.time * 0.03,
+        6, // Más octavas para tormentas complejas
+        detail,
+    );
+    let medium_vortex = turbulence_adaptive(
+        pos.x * 12.0 + uniforms.time * 0.06,
+        pos.y * 8.0,
+        pos.z * 12.0 - uniforms.time * 0.05,
+        5,
+        detail,
+    );
+    let small_vortex = turbulence_adaptive(
+        pos.x * 18.0 + uniforms.time * 0.09,
+        pos.y * 12.0,
+        pos.z * 18.0 - uniforms.time * 0.08,
+        4,
+        detail,
+    );
+    let vortex_combined = large_vortex * 0.5 + medium_vortex * 0.3 + small_vortex * 0.2;
+    let vortex_color = Color::from_float(0.85, 0.65, 0.45); // Naranja turbulento
+    base_color = mix_color(base_color, vortex_color, vortex_combined * 0.4);
+
+    // ===== CAPA 4: Gran Mancha Roja (Great Red Spot) =====
+    // La tormenta más famosa del sistema solar - tiene que verse BIEN
+    let storm_center = Vec3::new(0.3, -0.12, 0.65);
+    let dx = pos.x - storm_center.x;
+    let dy = (pos.y - storm_center.y) * 1.8; // Elíptica (más ancha que alta)
+    let dz = pos.z - storm_center.z;
+    let dist_to_storm = (dx * dx + dy * dy + dz * dz).sqrt();
+
+    let storm_radius = 0.38; // Más grande
+    let storm_intensity = (1.0 - (dist_to_storm / storm_radius)).max(0.0).powf(1.3);
+    
+    // Rotación de la tormenta (anti-ciclónica)
+    let angle = pos.x.atan2(pos.z) + uniforms.time * 0.08;
+    let storm_swirl = turbulence_adaptive(
+        pos.x * 16.0 + angle.cos() * 3.0,
+        pos.y * 16.0,
+        pos.z * 16.0 + angle.sin() * 3.0,
+        6, // Más detalle en la mancha
+        detail,
+    );
+
+    // Colores de la Gran Mancha Roja (rojo ladrillo con bordes naranjas)
+    let storm_center_color = Color::from_float(0.92, 0.22, 0.12); // Rojo intenso
+    let storm_mid_color = Color::from_float(0.88, 0.35, 0.18);    // Rojo anaranjado
+    let storm_edge_color = Color::from_float(0.82, 0.48, 0.28);   // Naranja
+    
+    let storm_color = if storm_intensity > 0.6 {
+        mix_color(storm_mid_color, storm_center_color, (storm_intensity - 0.6) * 2.5)
+    } else {
+        mix_color(storm_edge_color, storm_mid_color, storm_intensity * 1.67)
     };
     
-    // Capa 2: Turbulencias y vórtices
-    let vortex_noise = turbulence(
-        pos.x * 8.0 + uniforms.time * 0.03,
-        pos.y * 4.0,
-        pos.z * 8.0 - uniforms.time * 0.02,
-        5
+    base_color = mix_color(base_color, storm_color, storm_intensity * (0.7 + storm_swirl * 0.3));
+
+    // ===== CAPA 5: Tormentas secundarias =====
+    let white_spot_center = Vec3::new(-0.35, 0.35, 0.5);
+    let dist_white = ((pos - white_spot_center).magnitude() * 7.0 - 1.0).max(0.0);
+    let white_spot_intensity = (1.0 - dist_white).max(0.0).powf(2.0);
+    let white_storm_color = Color::from_float(0.95, 0.85, 0.70);
+    base_color = mix_color(base_color, white_storm_color, white_spot_intensity * 0.5);
+
+    let brown_spot_center = Vec3::new(0.4, 0.25, -0.4);
+    let dist_brown = ((pos - brown_spot_center).magnitude() * 9.0 - 1.0).max(0.0);
+    let brown_spot_intensity = (1.0 - dist_brown).max(0.0).powf(2.5);
+    let brown_storm_color = Color::from_float(0.65, 0.45, 0.30);
+    base_color = mix_color(base_color, brown_storm_color, brown_spot_intensity * 0.4);
+
+    // ===== CAPA 6: Nubes de alta altitud =====
+    let high_clouds = fbm_adaptive(
+        pos.x * 8.0 + uniforms.time * 0.12,
+        pos.y * 8.0,
+        pos.z * 8.0 - uniforms.time * 0.1,
+        3,
+        detail,
     );
-    let vortex_color = Color::from_float(0.75, 0.55, 0.35);
-    base_color = mix_color(base_color, vortex_color, vortex_noise * 0.4);
+    let cloud_intensity = ((high_clouds - 0.55).max(0.0) * 3.0).min(1.0);
+    let high_cloud_color = Color::from_float(0.98, 0.90, 0.75);
+    base_color = mix_color(base_color, high_cloud_color, cloud_intensity * 0.25);
+
+    // ===== CAPA 7: Iluminación atmosférica realista (inspirada en Three.js) =====
+    let light_dir = (uniforms.light_position - fragment_pos).normalize();
     
-    // Capa 3: Gran Mancha Roja (más grande y dinámica)
-    let storm_center = Vec3::new(0.25, -0.15, 0.6);
-    let dx = pos.x - storm_center.x;
-    let dy = (pos.y - storm_center.y) * 2.0;
-    let dz = pos.z - storm_center.z;
-    let dist_to_storm = (dx*dx + dy*dy + dz*dz).sqrt();
+    // Diffuse con wrap lighting para atmósfera densa
+    let diffuse_factor = (normal.dot(&light_dir) * 0.6 + 0.4).max(0.0);
     
-    let storm_radius = 0.35;
-    let storm_intensity = (1.0 - (dist_to_storm / storm_radius)).max(0.0).powf(1.5);
-    let storm_swirl = turbulence(
-        pos.x * 12.0 + uniforms.time * 0.15,
+    // Subsurface scattering (la luz atraviesa las nubes)
+    let subsurface = (-normal.dot(&light_dir)).max(0.0).powf(1.8) * (0.25 * detail + 0.08);
+    
+    // Ambient más cálido (luz reflejada de otras partes del planeta)
+    let ambient = 0.28;
+    
+    // Specular suave (nubes brillantes)
+    let reflect_dir = reflect(-light_dir, normal);
+    let spec = reflect_dir.dot(&view_dir).max(0.0).powf(6.0) * 0.12;
+    
+    // Fresnel para bordes más brillantes
+    let fresnel = (1.0 - edge_factor).powf(2.5) * 0.18;
+
+    let lighting = ambient + diffuse_factor * 0.85 + subsurface + spec + fresnel;
+    base_color = base_color * lighting.clamp(0.3, 1.8);
+
+    // ===== CAPA 8: Scattering atmosférico (rayos de luz dispersándose) =====
+    let scatter_intensity = (1.0 - edge_factor).powf(2.8);
+    let scatter_color = Color::from_float(0.92, 0.78, 0.62); // Naranja dorado cálido
+    base_color = mix_color(base_color, scatter_color, scatter_intensity * 0.25);
+
+    // ===== CAPA 9: Rim Light volumétrico (brillo atmosférico en los bordes) =====
+    let rim_light = (1.0 - edge_factor).powf(2.2);
+    let rim_color = Color::from_float(0.98, 0.82, 0.62);
+    base_color = mix_color(base_color, rim_color, rim_light * 0.35);
+
+    // ===== CAPA 10: Variación de densidad =====
+    let density_variation = fbm_adaptive(
+        pos.x * 12.0 + uniforms.time * 0.06,
         pos.y * 12.0,
-        pos.z * 12.0 - uniforms.time * 0.12,
-        4
+        pos.z * 12.0,
+        2,
+        detail,
     );
-    let storm_color = Color::from_float(0.8, 0.2, 0.1);
-    base_color = mix_color(base_color, storm_color, storm_intensity * storm_swirl);
-    
-    // Capa 4: Tormentas secundarias
-    let small_storm1 = Vec3::new(-0.3, 0.3, 0.5);
-    let dist1 = ((pos - small_storm1).magnitude() * 6.0 - 1.0).max(0.0).min(1.0);
-    let storm_color2 = Color::from_float(0.9, 0.6, 0.4);
-    base_color = mix_color(base_color, storm_color2, (1.0 - dist1) * 0.3);
-    
-    // Aplicar iluminación Phong
-    base_color = calculate_phong_lighting(
-        fragment_pos,
-        normal,
-        uniforms.light_position,
-        uniforms.camera_position,
-        base_color,
-        0.3,
-        0.75,
-        0.2,
-        8.0
-    );
-    
-    // Capa 5: Brillo atmosférico mejorado
-    let view_dir = (uniforms.camera_position - fragment_pos).normalize();
-    let glow = (1.0 - normal.dot(&view_dir).abs()).powf(2.0);
-    let glow_color = Color::from_float(0.95, 0.75, 0.55);
-    
-    mix_color(base_color, glow_color, glow * 0.3)
+    let density_factor = 0.7 + density_variation * 0.3;
+    base_color = base_color * density_factor;
+
+    base_color
 }
 
 // ============= PLANETA ROCOSO (TIPO MARTE) =============
@@ -415,65 +702,187 @@ pub fn mars_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
 }
 
 // ============= GIGANTE GASEOSO CON ANILLOS (TIPO SATURNO) =============
-// Shader con 4 capas: bandas suaves, turbulencias sutiles, hexágono polar, brillo
+// Shader con 7+ capas: atmósfera profunda, bandas en múltiples altitudes, turbulencias sutiles,
+// hexágono polar, corrientes de viento, scattering, brillo volumétrico
 pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
     let pos = vertex.position;
     let normal = vertex.transformed_normal.normalize();
     let fragment_pos = vertex.transformed_position;
+    let view_dir = (uniforms.camera_position - fragment_pos).normalize();
+    let detail = uniforms.detail_level;
     
-    // Capa 1: Bandas suaves (colores pastel)
-    let band_pattern = (pos.y * 8.0 + fbm(pos.x * 2.0, pos.y * 2.0, pos.z * 2.0, 3) * 0.4).sin();
-    let band_color1 = Color::from_float(0.95, 0.9, 0.7);
-    let band_color2 = Color::from_float(0.88, 0.83, 0.65);
-    let band_color3 = Color::from_float(0.92, 0.87, 0.68);
-    let band_mix = (band_pattern + 1.0) / 2.0;
+    // Calcular profundidad atmosférica
+    let edge_factor = normal.dot(&view_dir).abs();
+    let atmospheric_depth = (1.0 - edge_factor).powf(0.5);
     
-    let mut base_color = if band_mix > 0.66 {
+    // ===== CAPA 1: Atmósfera profunda base (tonos crema/beige) =====
+    let deep_atm_noise = fbm_adaptive(pos.x * 1.8, pos.y * 1.8, pos.z * 1.8, 3, detail);
+    let deep_color1 = Color::from_float(0.90, 0.85, 0.68);
+    let deep_color2 = Color::from_float(0.85, 0.80, 0.63);
+    let deep_layer = mix_color(deep_color1, deep_color2, deep_atm_noise);
+    
+    // ===== CAPA 2: Bandas atmosféricas en múltiples altitudes =====
+    let band_freq = 9.0;
+    
+    // Banda lenta (capa profunda) - movimiento lento hacia el este
+    let slow_distortion = fbm_adaptive(
+        pos.x * 2.0 + uniforms.time * 0.015,
+        pos.y * 1.5,
+        pos.z * 2.0 - uniforms.time * 0.01,
+        3,
+        detail,
+    ) * 0.6;
+    let slow_band = ((pos.y + slow_distortion) * band_freq * 0.9).sin();
+    
+    // Banda media
+    let mid_distortion = fbm_adaptive(
+        pos.x * 3.0 + uniforms.time * 0.025,
+        pos.y * 2.0,
+        pos.z * 3.0 - uniforms.time * 0.018,
+        3,
+        detail,
+    ) * 0.4;
+    let mid_band = ((pos.y + mid_distortion) * band_freq).sin();
+    
+    // Banda rápida (capa superior) - nubes rápidas
+    let fast_distortion = fbm_adaptive(
+        pos.x * 4.0 + uniforms.time * 0.04,
+        pos.y * 2.5,
+        pos.z * 4.0 - uniforms.time * 0.035,
+        2,
+        detail,
+    ) * 0.3;
+    let fast_band = ((pos.y + fast_distortion) * band_freq * 1.1).sin();
+    
+    // Colores de bandas (tonos pastel suaves)
+    let band_color1 = Color::from_float(0.98, 0.94, 0.78);  // Crema muy claro
+    let band_color2 = Color::from_float(0.88, 0.84, 0.68);  // Beige
+    let band_color3 = Color::from_float(0.93, 0.89, 0.73);  // Intermedio
+    let band_color4 = Color::from_float(0.84, 0.80, 0.65);  // Beige oscuro
+    
+    // Combinar bandas
+    let combined_band = slow_band * 0.4 + mid_band * 0.4 + fast_band * 0.2;
+    let band_value = (combined_band + 1.0) / 2.0;
+    
+    let band_color = if band_value > 0.75 {
         band_color1
-    } else if band_mix > 0.33 {
-        band_color3
+    } else if band_value > 0.5 {
+        mix_color(band_color3, band_color1, (band_value - 0.5) * 4.0)
+    } else if band_value > 0.25 {
+        mix_color(band_color2, band_color3, (band_value - 0.25) * 4.0)
     } else {
-        band_color2
+        mix_color(band_color4, band_color2, band_value * 4.0)
     };
     
-    // Capa 2: Turbulencias sutiles
-    let turb = fbm(
-        pos.x * 5.0 + uniforms.time * 0.02,
-        pos.y * 3.0,
-        pos.z * 5.0,
-        3
-    );
-    let turb_color = Color::from_float(0.9, 0.85, 0.67);
-    base_color = mix_color(base_color, turb_color, turb * 0.2);
+    // Mezclar capa profunda con bandas
+    let mut base_color = mix_color(deep_layer, band_color, 0.3 + atmospheric_depth * 0.7);
     
-    // Capa 3: Hexágono en polo norte (característica real de Saturno)
-    if pos.y > 0.7 {
+    // ===== CAPA 3: Turbulencias sutiles (más suaves que Júpiter) =====
+    let gentle_turbulence = fbm_adaptive(
+        pos.x * 5.0 + uniforms.time * 0.028,
+        pos.y * 3.5,
+        pos.z * 5.0 - uniforms.time * 0.022,
+        4,
+        detail,
+    );
+    let turb_color = Color::from_float(0.91, 0.87, 0.71);
+    base_color = mix_color(base_color, turb_color, gentle_turbulence * 0.25);
+    
+    // ===== CAPA 4: Corrientes de viento (jet streams) =====
+    // Saturno tiene vientos muy rápidos en ciertas latitudes
+    let wind_latitude = pos.y;
+    let wind_strength = if wind_latitude.abs() > 0.4 && wind_latitude.abs() < 0.6 {
+        1.0
+    } else {
+        0.0
+    };
+    
+    let wind_pattern = fbm_adaptive(
+        pos.x * 15.0 + uniforms.time * 0.15,
+        pos.y * 10.0,
+        pos.z * 15.0,
+        2,
+        detail,
+    );
+    let wind_color = Color::from_float(0.96, 0.92, 0.76);
+    base_color = mix_color(base_color, wind_color, wind_pattern * wind_strength * 0.3);
+    
+    // ===== CAPA 5: Hexágono en polo norte (característica real única de Saturno) =====
+    if pos.y > 0.68 {
         let angle = pos.x.atan2(pos.z);
-        let hex_pattern = (angle * 3.0).cos();
-        let hex_intensity = (pos.y - 0.7) * 5.0;
-        let hex_color = Color::from_float(0.85, 0.8, 0.6);
-        base_color = mix_color(base_color, hex_color, hex_pattern * hex_intensity * 0.3);
+        
+        // Crear patrón hexagonal (6 lados)
+        let hex_sides = 6.0;
+        let hex_angle = angle * hex_sides / 2.0;
+        let hex_pattern = hex_angle.cos();
+        
+        // Intensidad basada en latitud y patrón hexagonal
+        let lat_factor = ((pos.y - 0.68) * 8.0).min(1.0);
+        let hex_intensity = hex_pattern * lat_factor;
+        
+        // Color del hexágono (más oscuro)
+        let hex_color = Color::from_float(0.78, 0.74, 0.60);
+        base_color = mix_color(base_color, hex_color, hex_intensity.abs() * 0.4);
+        
+        // Agregar turbulencia dentro del hexágono
+        let hex_turb = turbulence_adaptive(
+            pos.x * 12.0 + uniforms.time * 0.08,
+            pos.y * 12.0,
+            pos.z * 12.0 - uniforms.time * 0.06,
+            3,
+            detail,
+        );
+        let hex_turb_color = Color::from_float(0.82, 0.78, 0.64);
+        base_color = mix_color(base_color, hex_turb_color, hex_turb * lat_factor * 0.3);
     }
     
-    // Aplicar iluminación Phong
-    base_color = calculate_phong_lighting(
-        fragment_pos,
-        normal,
-        uniforms.light_position,
-        uniforms.camera_position,
-        base_color,
-        0.35,
-        0.7,
-        0.15,
-        6.0
+    // ===== CAPA 6: Nubes de alta altitud (wispy clouds) =====
+    let high_clouds = fbm_adaptive(
+        pos.x * 7.0 + uniforms.time * 0.08,
+        pos.y * 7.0,
+        pos.z * 7.0 - uniforms.time * 0.06,
+        3,
+        detail,
     );
+    let cloud_intensity = ((high_clouds - 0.6).max(0.0) * 3.5).min(1.0);
+    let wispy_color = Color::from_float(0.99, 0.96, 0.82);
+    base_color = mix_color(base_color, wispy_color, cloud_intensity * 0.2);
     
-    // Capa 4: Brillo atmosférico suave
-    let view_dir = (uniforms.camera_position - fragment_pos).normalize();
-    let glow = (1.0 - normal.dot(&view_dir).abs()).powf(2.5);
-    let glow_color = Color::from_float(0.98, 0.93, 0.75);
+    // ===== CAPA 7: Iluminación atmosférica (gas dispersa luz suavemente) =====
+    let light_dir = (uniforms.light_position - fragment_pos).normalize();
+    let diffuse_factor = (normal.dot(&light_dir) * 0.5 + 0.5).max(0.0); // Wrap lighting
     
-    mix_color(base_color, glow_color, glow * 0.2)
+    // Subsurface scattering
+    let subsurface = (-normal.dot(&light_dir)).max(0.0).powf(2.5) * (0.18 + 0.12 * detail);
+    
+    let ambient = 0.4;
+    let spec = reflect(-light_dir, normal).dot(&view_dir).max(0.0).powf(3.0) * 0.12;
+    
+    let lighting = ambient + diffuse_factor * 0.65 + subsurface + spec;
+    base_color = base_color * lighting.min(1.4);
+    
+    // ===== CAPA 8: Scattering atmosférico (tonos dorados) =====
+    let scatter_intensity = (1.0 - edge_factor).powf(3.5);
+    let scatter_color = Color::from_float(0.95, 0.91, 0.75);
+    base_color = mix_color(base_color, scatter_color, scatter_intensity * 0.18);
+    
+    // ===== CAPA 9: Brillo volumétrico suave en los bordes =====
+    let rim_light = (1.0 - edge_factor).powf(2.2);
+    let rim_color = Color::from_float(0.99, 0.95, 0.80);
+    base_color = mix_color(base_color, rim_color, rim_light * 0.25);
+    
+    // ===== CAPA 10: Variación de densidad (atmósfera menos densa en los bordes) =====
+    let density_variation = fbm_adaptive(
+        pos.x * 10.0 + uniforms.time * 0.04,
+        pos.y * 10.0,
+        pos.z * 10.0,
+        2,
+        detail,
+    );
+    let density_factor = 0.75 + density_variation * 0.25;
+    base_color = base_color * density_factor;
+    
+    base_color
 }
 
 // ============= ANILLOS MEJORADOS =============
@@ -485,6 +894,13 @@ pub fn ring_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -
     
     // Distancia radial desde el centro (en el plano XZ)
     let radial_dist = (pos.x * pos.x + pos.z * pos.z).sqrt();
+    
+    // IMPORTANTE: Solo renderizar anillos entre ciertos radios (crear el "agujero" en el centro)
+    // Los anillos están entre 0.6 y 1.0 del radio normalizado
+    if radial_dist < 0.6 || radial_dist > 1.0 || pos.y.abs() > 0.05 {
+        // Fuera del rango de anillos o demasiado lejos del plano ecuatorial = transparente/negro
+        return Color::new(0, 0, 0);
+    }
     
     // Capa 1: Bandas principales con divisiones (Cassini Division)
     let band_pattern = (radial_dist * 40.0).sin();
