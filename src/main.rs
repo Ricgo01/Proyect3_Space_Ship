@@ -1,28 +1,31 @@
-use nalgebra_glm::{Vec3, Vec4, Mat4};
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
-use std::time::{Duration, Instant};
+use nalgebra_glm::{Mat4, Vec3, Vec4};
+use raylib::core::audio::{Music, RaylibAudio};
 use std::f32::consts::PI;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-mod framebuffer;
-mod triangle;
-mod line;
-mod vertex;
-mod obj;
+mod celestial_shaders;
 mod color;
 mod fragment;
+mod framebuffer;
+mod line;
+mod obj;
 mod shaders;
-mod celestial_shaders;
+mod triangle;
+mod vertex;
 
-use framebuffer::Framebuffer;
-use vertex::Vertex;
-use obj::Obj;
-use triangle::triangle;
-use line::line;
-use shaders::vertex_shader;
-use celestial_shaders::{CelestialBody, get_celestial_shader};
+use celestial_shaders::{get_celestial_shader, CelestialBody};
 use color::Color;
+use framebuffer::Framebuffer;
+use line::line;
+use obj::Obj;
+use shaders::vertex_shader;
+use triangle::triangle;
+use vertex::Vertex;
 
-const AIRWING_DISTANCE: f32 = 380.0;
+const AIRWING_DISTANCE: f32 = 340.0;
 const AIRWING_VERTICAL_OFFSET: f32 = 0.0;
 const AIRWING_SIDE_OFFSET: f32 = 0.0;
 const AIRWING_SCALE: f32 = 30.0;
@@ -32,6 +35,7 @@ const AIRWING_FORWARD_RANGE: f32 = 80.0;
 const CAMERA_SHIP_SAFE_GAP: f32 = 110.0;
 const CAMERA_SHIP_MIN_OFFSET: f32 = 140.0;
 const CAMERA_SHIP_MAX_OFFSET: f32 = 420.0;
+const MIN_CAMERA_TARGET_DISTANCE: f32 = 1.0;
 const STAR_COUNT: usize = 950;
 const STARFIELD_RADIUS: f32 = 5200.0;
 const STAR_DEPTH: f32 = 0.999_99;
@@ -62,7 +66,6 @@ impl Lcg {
     }
 }
 
-
 pub struct Uniforms {
     model_matrix: Mat4,
     view_matrix: Mat4,
@@ -73,6 +76,22 @@ pub struct Uniforms {
     camera_position: Vec3,
     detail_level: f32,
     ring_palette: Option<[Color; 3]>,
+}
+fn locate_asset(base_name: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir("assets").ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        if !entry.file_type().ok()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if stem.eq_ignore_ascii_case(base_name) {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 #[derive(Clone)]
@@ -97,24 +116,33 @@ impl Camera {
         nalgebra_glm::look_at(&self.position, &self.target, &self.up)
     }
 
+    fn forward_direction(&self) -> Option<Vec3> {
+        let dir = self.target - self.position;
+        if dir.magnitude_squared() < 1e-6 {
+            None
+        } else {
+            Some(dir.normalize())
+        }
+    }
+
     fn orbit(&mut self, delta_x: f32, delta_y: f32) {
         let radius = (self.position - self.target).magnitude();
-        
+
         // Calcular ángulos actuales
         let dx = self.position.x - self.target.x;
         let dy = self.position.y - self.target.y;
         let dz = self.position.z - self.target.z;
-        
+
         let mut theta = dz.atan2(dx); // ángulo horizontal
         let mut phi = (dy / radius).asin(); // ángulo vertical
-        
+
         // Aplicar deltas
         theta += delta_x;
         phi += delta_y;
-        
+
         // Limitar phi para evitar gimbal lock
         phi = phi.clamp(-PI / 2.0 + 0.1, PI / 2.0 - 0.1);
-        
+
         // Calcular nueva posición
         self.position.x = self.target.x + radius * phi.cos() * theta.cos();
         self.position.y = self.target.y + radius * phi.sin();
@@ -122,9 +150,10 @@ impl Camera {
     }
 
     fn move_forward(&mut self, amount: f32) {
-        let direction = (self.target - self.position).normalize();
-        self.position += direction * amount;
-        self.target += direction * amount;
+        if let Some(direction) = self.forward_direction() {
+            self.position += direction * amount;
+            self.target += direction * amount;
+        }
     }
 
     fn move_right(&mut self, amount: f32) {
@@ -140,9 +169,11 @@ impl Camera {
     }
 
     fn zoom_in(&mut self, amount: f32) {
-        let direction = (self.target - self.position).normalize();
+        let Some(direction) = self.forward_direction() else {
+            return;
+        };
         let current_distance = (self.position - self.target).magnitude();
-        
+
         // Zoom más lento cuando está cerca (para mejor control)
         let adjusted_amount = if current_distance < 200.0 {
             amount * 0.5
@@ -151,34 +182,29 @@ impl Camera {
         } else {
             amount
         };
-        
+
         self.position += direction * adjusted_amount;
-        
-        // No acercarse demasiado
-        let distance = (self.position - self.target).magnitude();
-        if distance < 80.0 {
-            self.position = self.target - direction * 80.0;
+
+        let new_distance = (self.position - self.target).magnitude();
+        if new_distance < MIN_CAMERA_TARGET_DISTANCE {
+            self.position = self.target - direction * MIN_CAMERA_TARGET_DISTANCE;
         }
     }
 
     fn zoom_out(&mut self, amount: f32) {
-        let direction = (self.target - self.position).normalize();
+        let Some(direction) = self.forward_direction() else {
+            return;
+        };
         let current_distance = (self.position - self.target).magnitude();
-        
+
         // Zoom más rápido cuando está lejos
         let adjusted_amount = if current_distance > 2000.0 {
             amount * 1.5
         } else {
             amount
         };
-        
+
         self.position -= adjusted_amount * direction;
-        
-        // No alejarse demasiado (aumentado para ver todo el sistema)
-        let distance = (self.position - self.target).magnitude();
-        if distance > 4000.0 {
-            self.position = self.target - direction * 4000.0;
-        }
     }
 }
 
@@ -188,33 +214,36 @@ fn create_model_matrix(translation: Vec3, scale: f32, rotation: Vec3) -> Mat4 {
     let (sin_z, cos_z) = rotation.z.sin_cos();
 
     let rotation_matrix_x = Mat4::new(
-        1.0,  0.0,    0.0,   0.0,
-        0.0,  cos_x, -sin_x, 0.0,
-        0.0,  sin_x,  cos_x, 0.0,
-        0.0,  0.0,    0.0,   1.0,
+        1.0, 0.0, 0.0, 0.0, 0.0, cos_x, -sin_x, 0.0, 0.0, sin_x, cos_x, 0.0, 0.0, 0.0, 0.0, 1.0,
     );
 
     let rotation_matrix_y = Mat4::new(
-        cos_y,  0.0,  sin_y, 0.0,
-        0.0,    1.0,  0.0,   0.0,
-        -sin_y, 0.0,  cos_y, 0.0,
-        0.0,    0.0,  0.0,   1.0,
+        cos_y, 0.0, sin_y, 0.0, 0.0, 1.0, 0.0, 0.0, -sin_y, 0.0, cos_y, 0.0, 0.0, 0.0, 0.0, 1.0,
     );
 
     let rotation_matrix_z = Mat4::new(
-        cos_z, -sin_z, 0.0, 0.0,
-        sin_z,  cos_z, 0.0, 0.0,
-        0.0,    0.0,  1.0, 0.0,
-        0.0,    0.0,  0.0, 1.0,
+        cos_z, -sin_z, 0.0, 0.0, sin_z, cos_z, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     );
 
     let rotation_matrix = rotation_matrix_z * rotation_matrix_y * rotation_matrix_x;
 
     let transform_matrix = Mat4::new(
-        scale, 0.0,   0.0,   translation.x,
-        0.0,   scale, 0.0,   translation.y,
-        0.0,   0.0,   scale, translation.z,
-        0.0,   0.0,   0.0,   1.0,
+        scale,
+        0.0,
+        0.0,
+        translation.x,
+        0.0,
+        scale,
+        0.0,
+        translation.y,
+        0.0,
+        0.0,
+        scale,
+        translation.z,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     );
 
     transform_matrix * rotation_matrix
@@ -257,11 +286,11 @@ fn compute_airwing_pose(
             candidate.normalize()
         }
     };
-    let camera_distance = (camera.target - camera.position).magnitude().max(1.0);
-    let base_forward = (camera_distance - CAMERA_SHIP_SAFE_GAP)
-        .clamp(CAMERA_SHIP_MIN_OFFSET, CAMERA_SHIP_MAX_OFFSET);
+    // Mantener al airwing estable y claramente visible frente a la cámara
+    let fixed_ship_distance = AIRWING_DISTANCE;
+
     let forward_delta = (forward_adjust * 0.15).clamp(-25.0, 25.0);
-    let offset = forward_dir * (base_forward + forward_delta)
+    let offset = forward_dir * (fixed_ship_distance + forward_delta)
         + up_dir * (AIRWING_VERTICAL_OFFSET + vertical_adjust)
         + right_dir * (AIRWING_SIDE_OFFSET + lateral_adjust);
     let position = camera.position + offset;
@@ -270,6 +299,26 @@ fn compute_airwing_pose(
         position,
         forward: forward_dir,
     }
+}
+
+fn stylized_airwing_offsets(
+    ship_forward_state: f32,
+    ship_vertical_state: f32,
+    idle_vertical: f32,
+    lateral_offset: f32,
+    bank_state: f32,
+    pitch_state: f32,
+) -> (f32, f32, f32) {
+    let thrust_ratio = (ship_forward_state / AIRWING_FORWARD_RANGE).clamp(-1.2, 1.2);
+    let pitch_boost = pitch_state * 34.0;
+    let bank_arc_forward = bank_state * 18.0;
+    let surge_forward = thrust_ratio * 16.0;
+
+    let animated_forward = ship_forward_state + pitch_boost + bank_arc_forward + surge_forward;
+    let animated_vertical = ship_vertical_state + idle_vertical + bank_state * 7.0;
+    let animated_lateral = lateral_offset + bank_state * 8.0;
+
+    (animated_forward, animated_vertical, animated_lateral)
 }
 
 fn collision_radius(obj: &CelestialObject) -> f32 {
@@ -281,17 +330,59 @@ fn collision_radius(obj: &CelestialObject) -> f32 {
     }
 }
 
-fn ship_collides(ship_pos: Vec3, ship_radius: f32, objects: &[CelestialObject], moon: &CelestialObject) -> bool {
-    let intersects = |target: &CelestialObject| {
-        let combined = ship_radius + collision_radius(target);
-        (ship_pos - target.translation).magnitude() < combined
-    };
+#[derive(Clone, Copy, Debug)]
+struct CollisionHit {
+    normal: Vec3,
+    penetration: f32,
+}
 
-    if objects.iter().any(|obj| intersects(obj)) {
-        return true;
+fn detect_ship_collision(
+    ship_pos: Vec3,
+    ship_radius: f32,
+    objects: &[CelestialObject],
+    moon: &CelestialObject,
+) -> Option<CollisionHit> {
+    fn test_target(
+        target: &CelestialObject,
+        ship_pos: Vec3,
+        ship_radius: f32,
+    ) -> Option<CollisionHit> {
+        let combined = ship_radius + collision_radius(target);
+        let delta = ship_pos - target.translation;
+        let distance_sq = delta.magnitude_squared();
+        if distance_sq >= combined * combined {
+            return None;
+        }
+
+        let distance = distance_sq.sqrt().max(1e-4);
+        let normal = if distance_sq < 1e-6 {
+            Vec3::new(0.0, 1.0, 0.0)
+        } else {
+            delta / distance
+        };
+        let penetration = combined - distance;
+        Some(CollisionHit {
+            normal,
+            penetration,
+        })
     }
 
-    intersects(moon)
+    let mut best_hit: Option<CollisionHit> = None;
+    let mut consider = |target: &CelestialObject| {
+        if let Some(hit) = test_target(target, ship_pos, ship_radius) {
+            match best_hit {
+                Some(existing) if existing.penetration >= hit.penetration => {}
+                _ => best_hit = Some(hit),
+            }
+        }
+    };
+
+    for obj in objects.iter().skip(1) {
+        consider(obj);
+    }
+    consider(moon);
+
+    best_hit
 }
 
 // Sistema LOD de 3 niveles para máximo rendimiento
@@ -300,33 +391,45 @@ fn check_lod(object_position: Vec3, object_radius: f32, camera: &Camera) -> usiz
     // Calcular distancia del objeto a la cámara
     let to_object = object_position - camera.position;
     let distance = to_object.magnitude();
-    
+
     // ULTRA LOW POLY: MUY cerca (12 vértices, 20 triángulos) - MÁXIMO RENDIMIENTO
     if distance < object_radius * 4.0 {
         return 0; // Ultra low poly
     }
-    
+
     // LOW POLY: Cerca-medio (482 vértices, 512 triángulos) - Buen rendimiento
     if distance < object_radius * 12.0 {
         return 1; // Low poly
     }
-    
+
     // HIGH POLY: Lejos (482 vértices, 960 triángulos) - Mejor calidad
     2 // High poly
 }
 
 fn create_viewport_matrix(width: f32, height: f32) -> Mat4 {
     Mat4::new(
-        width / 2.0, 0.0, 0.0, width / 2.0,
-        0.0, -height / 2.0, 0.0, height / 2.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 0.0, 1.0
+        width / 2.0,
+        0.0,
+        0.0,
+        width / 2.0,
+        0.0,
+        -height / 2.0,
+        0.0,
+        height / 2.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     )
 }
 
 fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Vertex]) {
     use rayon::prelude::*;
-    
+
     // Vertex Shader Stage (PARALELO - 2-4x más rápido en multi-core)
     let transformed_vertices: Vec<Vertex> = vertex_array
         .par_iter()
@@ -341,14 +444,14 @@ fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Ve
             let v0 = &transformed_vertices[i].transformed_position;
             let v1 = &transformed_vertices[i + 1].transformed_position;
             let v2 = &transformed_vertices[i + 2].transformed_position;
-            
+
             // Producto cruz en 2D (determina orientación)
             let edge1_x = v1.x - v0.x;
             let edge1_y = v1.y - v0.y;
             let edge2_x = v2.x - v0.x;
             let edge2_y = v2.y - v0.y;
             let cross = edge1_x * edge2_y - edge1_y * edge2_x;
-            
+
             // Si cross <= 0, el triángulo está de espaldas - SALTAR
             if cross > 0.0 {
                 triangles.push([
@@ -366,15 +469,19 @@ fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Ve
         .par_iter()
         .flat_map(|tri| {
             let frags = triangle(&tri[0], &tri[1], &tri[2]);
-            frags.into_iter().map(|mut frag| {
-                // Aplicar shader
-                let shader_color = get_celestial_shader(uniforms.current_shader, &frag, &tri[0], uniforms);
-                frag.color = shader_color;
-                frag
-            }).collect::<Vec<_>>()
+            frags
+                .into_iter()
+                .map(|mut frag| {
+                    // Aplicar shader
+                    let shader_color =
+                        get_celestial_shader(uniforms.current_shader, &frag, &tri[0], uniforms);
+                    frag.color = shader_color;
+                    frag
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
-    
+
     // Escribir fragmentos al framebuffer (secuencial para evitar race conditions en z-buffer)
     for frag in fragments {
         let x = frag.position.x as usize;
@@ -436,17 +543,24 @@ fn draw_orbit(
             p2_clip.z / p2_clip.w,
         );
 
-        if p1_ndc.x.abs() > 2.0 || p1_ndc.y.abs() > 2.0 ||
-           p2_ndc.x.abs() > 2.0 || p2_ndc.y.abs() > 2.0 ||
-           p1_clip.w < 0.0 || p2_clip.w < 0.0 {
+        if p1_ndc.x.abs() > 2.0
+            || p1_ndc.y.abs() > 2.0
+            || p2_ndc.x.abs() > 2.0
+            || p2_ndc.y.abs() > 2.0
+            || p1_clip.w < 0.0
+            || p2_clip.w < 0.0
+        {
             continue;
         }
 
         let p1_screen = viewport_matrix * Vec4::new(p1_ndc.x, p1_ndc.y, p1_ndc.z, 1.0);
         let p2_screen = viewport_matrix * Vec4::new(p2_ndc.x, p2_ndc.y, p2_ndc.z, 1.0);
 
-        if p1_screen.x.is_nan() || p1_screen.y.is_nan() ||
-           p2_screen.x.is_nan() || p2_screen.y.is_nan() {
+        if p1_screen.x.is_nan()
+            || p1_screen.y.is_nan()
+            || p2_screen.x.is_nan()
+            || p2_screen.y.is_nan()
+        {
             continue;
         }
 
@@ -563,165 +677,6 @@ fn sphere_visible(position: Vec3, radius: f32, view_projection: &Mat4) -> bool {
         && ndc.z <= 1.2 + margin
 }
 
-fn fill_rect(framebuffer: &mut Framebuffer, x: usize, y: usize, width: usize, height: usize, color: u32) {
-    if width == 0 || height == 0 {
-        return;
-    }
-    let max_x = x.saturating_add(width).min(framebuffer.width);
-    let max_y = y.saturating_add(height).min(framebuffer.height);
-    framebuffer.set_current_color(color);
-    for py in y..max_y {
-        for px in x..max_x {
-            framebuffer.point(px, py, f32::NEG_INFINITY);
-        }
-    }
-}
-
-fn stroke_rect(framebuffer: &mut Framebuffer, x: usize, y: usize, width: usize, height: usize, color: u32) {
-    if width == 0 || height == 0 {
-        return;
-    }
-    fill_rect(framebuffer, x, y, width, 1, color);
-    if height > 1 {
-        fill_rect(framebuffer, x, y.saturating_add(height - 1), width, 1, color);
-        if height > 2 {
-            fill_rect(framebuffer, x, y + 1, 1, height - 2, color);
-            if width > 1 {
-                fill_rect(framebuffer, x.saturating_add(width - 1), y + 1, 1, height - 2, color);
-            }
-        }
-    }
-}
-
-fn draw_vertical_marker(
-    framebuffer: &mut Framebuffer,
-    x: usize,
-    center_y: usize,
-    half_height: usize,
-    thickness: usize,
-    color: u32,
-    glow_color: u32,
-) {
-    if half_height == 0 || thickness == 0 {
-        return;
-    }
-    let start_x = x.saturating_sub(thickness / 2);
-    let start_y = center_y.saturating_sub(half_height);
-    let marker_width = thickness.max(1);
-    fill_rect(framebuffer, start_x, start_y, marker_width, half_height * 2 + 1, color);
-    if marker_width >= 2 {
-        fill_rect(
-            framebuffer,
-            start_x,
-            start_y.saturating_sub(1),
-            marker_width,
-            1,
-            glow_color,
-        );
-        fill_rect(
-            framebuffer,
-            start_x,
-            start_y + half_height * 2 + 1,
-            marker_width,
-            1,
-            glow_color,
-        );
-    }
-}
-
-fn body_minimap_color(body: CelestialBody) -> u32 {
-    match body {
-        CelestialBody::Sun => 0xF6C96C,
-        CelestialBody::Earth => 0x5DB2FF,
-        CelestialBody::Mars => 0xC96B46,
-        CelestialBody::Saturn => 0xD9C48F,
-        CelestialBody::IcePlanet => 0x91E0FF,
-        CelestialBody::AlienPlanet => 0xB07BFF,
-        CelestialBody::Jupiter => 0xE2B679,
-        CelestialBody::LavaPlanet => 0xFF7A52,
-        CelestialBody::Moon => 0xCCCCCC,
-        CelestialBody::Airwing => 0xFFFFFF,
-        CelestialBody::Ring => 0xFFFFFF,
-    }
-}
-
-fn draw_minimap(
-    framebuffer: &mut Framebuffer,
-    objects: &[CelestialObject],
-    moon: &CelestialObject,
-    camera: &Camera,
-    reference_x: f32,
-) {
-    if framebuffer.width < 140 || framebuffer.height < 90 {
-        return;
-    }
-
-    let width = (framebuffer.width as f32 * 0.3).clamp(190.0, 360.0) as usize;
-    let height = (framebuffer.height as f32 * 0.17).clamp(80.0, 140.0) as usize;
-    let margin = (framebuffer.width as f32 * 0.017).clamp(8.0, 24.0) as usize;
-    let padding = 10;
-    let left = margin;
-    let top = framebuffer.height.saturating_sub(height + margin);
-    let axis_y = top + height / 2;
-    let inner_width = width.saturating_sub(padding * 2).max(1);
-
-    fill_rect(framebuffer, left, top, width, height, 0x0C142E);
-    stroke_rect(framebuffer, left, top, width, height, 0x4B5FA0);
-
-    let axis_color = 0x8AA1FF;
-    let axis_top = axis_y.saturating_sub(1);
-    fill_rect(framebuffer, left + padding, axis_top, inner_width, 2, axis_color);
-    fill_rect(framebuffer, left + padding, axis_y.saturating_add(2), inner_width, 1, 0x263463);
-
-    let mut min_x = reference_x;
-    let mut max_x = reference_x;
-    for obj in objects {
-        min_x = min_x.min(obj.translation.x);
-        max_x = max_x.max(obj.translation.x);
-    }
-    min_x = min_x.min(moon.translation.x).min(camera.position.x);
-    max_x = max_x.max(moon.translation.x).max(camera.position.x);
-
-    let mut span = (max_x - min_x).abs();
-    if span < 1.0 {
-        span = 1.0;
-    }
-    let extra = span * 0.08 + 80.0;
-    min_x -= extra;
-    max_x += extra;
-    span = (max_x - min_x).max(1.0);
-
-    let max_index = framebuffer.width.saturating_sub(1) as isize;
-    let project = |value: f32| -> usize {
-        let normalized = ((value - min_x) / span).clamp(0.0, 1.0);
-        let offset = (normalized * (inner_width.saturating_sub(1) as f32)).round() as isize;
-        (((left + padding) as isize + offset).clamp(0, max_index)) as usize
-    };
-
-    for obj in objects {
-        let x = project(obj.translation.x);
-        let half = if matches!(obj.body_type, CelestialBody::Sun) { 12 } else { 7 };
-        let thickness = if matches!(obj.body_type, CelestialBody::Sun) { 5 } else { 3 };
-        let accent = body_minimap_color(obj.body_type);
-        draw_vertical_marker(framebuffer, x, axis_y, half, thickness, accent, 0xFFFFFF);
-    }
-
-    let moon_x = project(moon.translation.x);
-    draw_vertical_marker(
-        framebuffer,
-        moon_x,
-        axis_y,
-        5,
-        3,
-        body_minimap_color(CelestialBody::Moon),
-        0xE7F1FF,
-    );
-
-    let cam_x = project(camera.position.x);
-    draw_vertical_marker(framebuffer, cam_x, axis_y, 10, 4, 0x34D1FF, 0xB7F4FF);
-    fill_rect(framebuffer, cam_x.saturating_sub(3), axis_y + 8, 7, 3, 0x34D1FF);
-}
-
 fn orbit_segment_count(distance_to_camera: f32, radius: f32) -> u32 {
     let base = if distance_to_camera > 2200.0 {
         120
@@ -760,7 +715,12 @@ struct CelestialObject {
 }
 
 impl CelestialObject {
-    fn new(body_type: CelestialBody, translation: Vec3, scale: f32, use_large_sphere: bool) -> Self {
+    fn new(
+        body_type: CelestialBody,
+        translation: Vec3,
+        scale: f32,
+        use_large_sphere: bool,
+    ) -> Self {
         CelestialObject {
             body_type,
             translation,
@@ -828,7 +788,8 @@ impl CelestialObject {
 
             let angle = self.current_orbit_angle;
             self.translation.x = self.orbit_center.x + angle.cos() * self.orbit_radius;
-            self.translation.z = self.orbit_center.z + angle.sin() * self.orbit_radius * self.orbit_minor_ratio;
+            self.translation.z =
+                self.orbit_center.z + angle.sin() * self.orbit_radius * self.orbit_minor_ratio;
         }
 
         if let Some(ring) = &mut self.ring {
@@ -887,10 +848,9 @@ impl RingConfig {
 fn main() {
     let window_width = 1200;
     let window_height = 800;
-    // Supersampling dinámico: factor cambia según la distancia de la cámara
-    let mut render_scale = 1.5f32;
-    let mut framebuffer_width = ((window_width as f32 * render_scale).round() as usize).max(1);
-    let mut framebuffer_height = ((window_height as f32 * render_scale).round() as usize).max(1);
+    let render_scale = 1.0f32;
+    let framebuffer_width = ((window_width as f32 * render_scale).round() as usize).max(1);
+    let framebuffer_height = ((window_height as f32 * render_scale).round() as usize).max(1);
     let frame_delay = Duration::from_millis(16);
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
@@ -906,6 +866,30 @@ fn main() {
     window.update();
 
     framebuffer.set_background_color(0x000011);
+
+    let audio_device = RaylibAudio::init_audio_device().ok();
+    let background_music: Option<Music> = audio_device.as_ref().and_then(|audio| {
+        let asset_path = locate_asset("sonido1")?;
+        let path_string = asset_path.to_string_lossy().into_owned();
+        match audio.new_music(&path_string) {
+            Ok(music) => Some(music),
+            Err(err) => {
+                eprintln!("Aviso: no se pudo cargar el audio 'sonido1': {err}");
+                None
+            }
+        }
+    });
+
+    if background_music.is_none() {
+        if audio_device.is_none() {
+            eprintln!("Aviso: no se pudo inicializar el dispositivo de audio de raylib.");
+        } else {
+            eprintln!("Aviso: no se encontró archivo 'sonido1' en assets/.");
+        }
+    } else if let Some(music) = background_music.as_ref() {
+        music.set_volume(0.35);
+        music.play_stream();
+    }
 
     let sun_position = Vec3::new(600.0, 400.0, 0.0);
     let stars = generate_stars(STAR_COUNT, STARFIELD_RADIUS, sun_position);
@@ -923,7 +907,6 @@ fn main() {
         // Sol (centro)
         CelestialObject::new(CelestialBody::Sun, sun_position, 100.0, false)
             .with_rotation_speed(Vec3::new(0.0, 0.005, 0.0)),
-
         // Tierra
         CelestialObject::new(CelestialBody::Earth, sun_position, 40.0, false)
             .with_orbit_center(sun_position)
@@ -931,7 +914,6 @@ fn main() {
             .with_orbit_shape(0.55)
             .with_orbit_phase(PI * 0.12)
             .with_rotation_speed(Vec3::new(0.0, 0.02, 0.0)),
-
         // Planeta café (usamos el shader de Marte)
         CelestialObject::new(CelestialBody::Mars, sun_position, 34.0, false)
             .with_orbit_center(sun_position)
@@ -939,7 +921,6 @@ fn main() {
             .with_orbit_shape(0.6)
             .with_orbit_phase(PI * 0.33)
             .with_rotation_speed(Vec3::new(0.0, 0.018, 0.0)),
-
         // Saturno (único con anillos)
         CelestialObject::new(CelestialBody::Saturn, sun_position, 68.0, false)
             .with_orbit_center(sun_position)
@@ -955,9 +936,8 @@ fn main() {
                         Color::from_float(0.98, 0.86, 0.52),
                         Color::from_float(0.83, 0.64, 0.33),
                         Color::from_float(0.63, 0.44, 0.22),
-                    ])
+                    ]),
             ),
-
         // IcePlanet (órbita amplia y lenta)
         CelestialObject::new(CelestialBody::IcePlanet, sun_position, 48.0, false)
             .with_orbit_center(sun_position)
@@ -965,7 +945,6 @@ fn main() {
             .with_orbit_shape(0.6)
             .with_orbit_phase(PI * 0.04)
             .with_rotation_speed(Vec3::new(0.0, 0.022, 0.0)),
-
         // AlienPlanet (el más lejano)
         CelestialObject::new(CelestialBody::AlienPlanet, sun_position, 52.0, false)
             .with_orbit_center(sun_position)
@@ -977,30 +956,47 @@ fn main() {
 
     // Luna de la Tierra - esfera chica (SUPER CERCA de la Tierra)
     let mut earth_moon = CelestialObject::new(CelestialBody::Moon, sun_position, 10.0, false)
-        .with_orbit(20.0, 1.2)  // Órbita cercana (20 unidades) - acompaña a la Tierra
+        .with_orbit(20.0, 1.2) // Órbita cercana (20 unidades) - acompaña a la Tierra
         .with_orbit_shape(0.5)
         .with_rotation_speed(Vec3::new(0.0, 0.01, 0.0));
+
+    let farthest_orbit_radius = celestial_objects
+        .iter()
+        .map(|obj| {
+            if obj.orbit_radius > 0.0 {
+                obj.orbit_radius + obj.scale
+            } else {
+                let dx = obj.translation.x - sun_position.x;
+                let dy = obj.translation.y - sun_position.y;
+                let dz = obj.translation.z - sun_position.z;
+                (dx * dx + dy * dy + dz * dz).sqrt() + obj.scale
+            }
+        })
+        .fold(0.0_f32, f32::max);
+    let close_camera_render_distance =
+        farthest_orbit_radius + AIRWING_FORWARD_RANGE + AIRWING_COLLISION_RADIUS + 200.0;
 
     let mut time = 0.0f32;
     let mut last_frame = Instant::now();
     let mut show_orbits = true;
-    let mut show_minimap = true;
     let mut ship_vertical_state = 0.0f32;
     let mut ship_forward_state = 0.0f32;
     let mut ship_idle_phase = 0.0f32;
-    let mut avg_frame_ms = 16.0f32;
-    let mut performance_scale_offset = 0.0f32;
-    let mut performance_cooldown_frames = 0usize;
-    
+
     // Inicializar cámara con un ángulo similar a la referencia (ligeramente elevada y hacia atrás)
     let mut camera = Camera::new(
         // Posición inicial mucho más alejada para ver todo el sistema al arrancar
-        Vec3::new(sun_position.x, sun_position.y + 420.0, sun_position.z + 3300.0),
-        sun_position
+        Vec3::new(
+            sun_position.x,
+            sun_position.y + 420.0,
+            sun_position.z + 3300.0,
+        ),
+        sun_position,
     );
 
     let projection_matrix = create_projection_matrix(window_width as f32, window_height as f32);
-    let viewport_matrix = create_viewport_matrix(window_width as f32, window_height as f32);
+    let viewport_matrix =
+        create_viewport_matrix(framebuffer_width as f32, framebuffer_height as f32);
     let mut airwing_bank_state = 0.0f32;
     let mut airwing_pitch_state = 0.0f32;
 
@@ -1013,10 +1009,6 @@ fn main() {
         }
         delta_time = delta_time.clamp(0.0, 0.05);
 
-        if performance_cooldown_frames > 0 {
-            performance_cooldown_frames -= 1;
-        }
-
         if window.is_key_down(Key::Escape) {
             break;
         }
@@ -1024,16 +1016,20 @@ fn main() {
         if window.is_key_pressed(Key::O, KeyRepeat::No) {
             show_orbits = !show_orbits;
         }
-        if window.is_key_pressed(Key::M, KeyRepeat::No) {
-            show_minimap = !show_minimap;
+
+        if let Some(music) = background_music.as_ref() {
+            music.update_stream();
+            if !music.is_stream_playing() {
+                music.play_stream();
+            }
         }
 
         let previous_camera = camera.clone();
         handle_input(&window, &mut camera);
 
-        let camera_changed =
-            (camera.position - previous_camera.position).magnitude_squared() > 0.001 ||
-            (camera.target - previous_camera.target).magnitude_squared() > 0.001;
+        let camera_changed = (camera.position - previous_camera.position).magnitude_squared()
+            > 0.001
+            || (camera.target - previous_camera.target).magnitude_squared() > 0.001;
         if camera_changed {
             airwing_bank_state = 0.0;
             airwing_pitch_state = 0.0;
@@ -1069,7 +1065,8 @@ fn main() {
         airwing_bank_state += (bank_target - airwing_bank_state) * smoothing;
         airwing_pitch_state += (pitch_target - airwing_pitch_state) * smoothing;
         ship_vertical_state += (ship_vertical_target - ship_vertical_state) * 0.10;
-        ship_vertical_state = ship_vertical_state.clamp(-AIRWING_EXTRA_VERTICAL_RANGE, AIRWING_EXTRA_VERTICAL_RANGE);
+        ship_vertical_state =
+            ship_vertical_state.clamp(-AIRWING_EXTRA_VERTICAL_RANGE, AIRWING_EXTRA_VERTICAL_RANGE);
 
         let ship_thrust_target = if window.is_key_down(Key::W) {
             AIRWING_FORWARD_RANGE
@@ -1079,7 +1076,8 @@ fn main() {
             -10.0
         };
         ship_forward_state += (ship_thrust_target - ship_forward_state) * 0.08;
-        ship_forward_state = ship_forward_state.clamp(-AIRWING_FORWARD_RANGE, AIRWING_FORWARD_RANGE);
+        ship_forward_state =
+            ship_forward_state.clamp(-AIRWING_FORWARD_RANGE, AIRWING_FORWARD_RANGE);
 
         ship_idle_phase += delta_time * 1.8;
         if ship_idle_phase > 2.0 * PI {
@@ -1088,57 +1086,84 @@ fn main() {
 
         let lateral_offset = airwing_bank_state * 12.0;
         let idle_vertical = ship_idle_phase.sin() * 4.0;
+        let (mut animated_forward, mut animated_vertical, mut animated_lateral) =
+            stylized_airwing_offsets(
+                ship_forward_state,
+                ship_vertical_state,
+                idle_vertical,
+                lateral_offset,
+                airwing_bank_state,
+                airwing_pitch_state,
+            );
         let mut airwing_pose = compute_airwing_pose(
             &camera,
-            ship_forward_state,
-            ship_vertical_state + idle_vertical,
-            lateral_offset,
+            animated_forward,
+            animated_vertical,
+            animated_lateral,
         );
-        if ship_collides(
+
+        let mut collision_iterations = 0;
+        let mut collision_unresolved = false;
+        while let Some(hit) = detect_ship_collision(
             airwing_pose.position,
             AIRWING_COLLISION_RADIUS,
             &celestial_objects,
             &earth_moon,
         ) {
-            camera = previous_camera;
+            collision_iterations += 1;
+            if collision_iterations > 4 {
+                camera = previous_camera;
+                collision_unresolved = true;
+                break;
+            }
+
+            let correction = hit.normal * (hit.penetration + 1.5);
+            camera.position += correction;
+            camera.target += correction;
+
+            if ship_forward_state > 0.0 {
+                ship_forward_state *= 0.35;
+            }
+
+            (animated_forward, animated_vertical, animated_lateral) = stylized_airwing_offsets(
+                ship_forward_state,
+                ship_vertical_state,
+                idle_vertical,
+                lateral_offset,
+                airwing_bank_state,
+                airwing_pitch_state,
+            );
             airwing_pose = compute_airwing_pose(
                 &camera,
-                ship_forward_state,
-                ship_vertical_state + idle_vertical,
-                lateral_offset,
+                animated_forward,
+                animated_vertical,
+                animated_lateral,
             );
         }
 
-        // Calcular distancia de la cámara al objetivo
-        let distance_to_target = (camera.position - camera.target).magnitude();
-        
-        // Decidir factor de supersampling basado en distancia (con histéresis para evitar parpadeo)
-        let base_scale = if distance_to_target > 1500.0 {
-            1.5
-        } else if distance_to_target > 800.0 {
-            1.0
-        } else if distance_to_target > 300.0 {
-            0.8
-        } else if distance_to_target > 160.0 {
-            0.65
-        } else {
-            0.5
-        };
-
-        let desired_scale = (base_scale + performance_scale_offset).clamp(0.5, 1.5);
-
-        if (desired_scale - render_scale).abs() > f32::EPSILON {
-            render_scale = desired_scale;
-            framebuffer_width = ((window_width as f32 * render_scale).round() as usize).max(1);
-            framebuffer_height = ((window_height as f32 * render_scale).round() as usize).max(1);
-            framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
-            framebuffer.set_background_color(0x000011);
+        if collision_unresolved {
+            (animated_forward, animated_vertical, animated_lateral) = stylized_airwing_offsets(
+                ship_forward_state,
+                ship_vertical_state,
+                idle_vertical,
+                lateral_offset,
+                airwing_bank_state,
+                airwing_pitch_state,
+            );
+            airwing_pose = compute_airwing_pose(
+                &camera,
+                animated_forward,
+                animated_vertical,
+                animated_lateral,
+            );
         }
+
+        let distance_to_target = (camera.position - camera.target).magnitude();
 
         framebuffer.clear();
 
         time += delta_time;
-        
+
         let view_matrix = camera.get_view_matrix();
         let view_projection_matrix = projection_matrix * view_matrix;
         draw_stars(
@@ -1202,25 +1227,34 @@ fn main() {
         let pitch = (-forward_dir.y).asin();
         let pitch_tilt = (pitch * 1.1 + airwing_pitch_state).clamp(-1.2, 1.2);
         let bank_tilt = (airwing_bank_state).clamp(-0.9, 0.9);
-        let airwing_rotation = Vec3::new(pitch_tilt + PI, -yaw + PI / 2.0, bank_tilt);
+        let thrust_ratio = (ship_forward_state / AIRWING_FORWARD_RANGE).clamp(-1.0, 1.0);
+        let yaw_sway = airwing_bank_state * 0.25;
+        let roll_shake = thrust_ratio * 0.2 + (ship_idle_phase * 1.7).sin() * 0.05;
+        let pitch_sweep = airwing_bank_state.abs() * 0.12
+            + (ship_vertical_state / AIRWING_EXTRA_VERTICAL_RANGE).clamp(-1.0, 1.0) * 0.1;
+        let airwing_rotation = Vec3::new(
+            pitch_tilt + PI + pitch_sweep,
+            -yaw + PI / 2.0 + yaw_sway,
+            bank_tilt + roll_shake,
+        );
 
-        // Nivel de detalle ULTRA AGRESIVO basado en distancia (más cerca = menos detalle para MÁXIMO rendimiento)
-        let detail_level = if distance_to_target > 1500.0 {
-            1.0  // Lejos: máximo detalle
-        } else if distance_to_target > 800.0 {
+        // Nivel de detalle basado en distancia (más cerca = MÁS detalle, como debe ser)
+        let detail_level = if distance_to_target < 200.0 {
+            1.0 // Muy cerca: máximo detalle
+        } else if distance_to_target < 400.0 {
+            0.85 // Cerca: muy buen detalle
+        } else if distance_to_target < 800.0 {
             0.65 // Media: buen detalle
-        } else if distance_to_target > 400.0 {
-            0.45 // Cerca: detalle reducido
-        } else if distance_to_target > 200.0 {
-            0.3  // Muy cerca: bajo detalle
+        } else if distance_to_target < 1500.0 {
+            0.45 // Lejos: detalle reducido
         } else {
-            0.15 // ULTRA CERCA: mínimo detalle absoluto para MÁXIMO rendimiento
+            0.3 // Muy lejos: mínimo detalle para optimizar rendimiento
         };
 
         let max_object_render_distance = if distance_to_target > 700.0 {
             f32::INFINITY
         } else {
-            2600.0
+            close_camera_render_distance
         };
 
         // Renderizar todos los cuerpos usando Esfera_Low.obj (178 vértices, 192 caras - MÁXIMO rendimiento)
@@ -1231,7 +1265,11 @@ fn main() {
                     continue;
                 }
 
-                if !sphere_visible(celestial_obj.translation, celestial_obj.scale * 1.6, &view_projection_matrix) {
+                if !sphere_visible(
+                    celestial_obj.translation,
+                    celestial_obj.scale * 1.6,
+                    &view_projection_matrix,
+                ) {
                     continue;
                 }
             }
@@ -1252,7 +1290,7 @@ fn main() {
                 detail_level,
                 ring_palette: None,
             };
-            
+
             // TODOS usan Esfera_Low.obj (178 vértices, 192 caras) para MÁXIMO rendimiento
             render(&mut framebuffer, &uniforms, &sphere_low_vertices);
 
@@ -1295,11 +1333,8 @@ fn main() {
         render(&mut framebuffer, &moon_uniforms, &sphere_low_vertices);
 
         // Renderizar el airwing siguiendo a la cámara
-        let airwing_model_matrix = create_model_matrix(
-            airwing_position,
-            AIRWING_SCALE,
-            airwing_rotation,
-        );
+        let airwing_model_matrix =
+            create_model_matrix(airwing_position, AIRWING_SCALE, airwing_rotation);
         let airwing_uniforms = Uniforms {
             model_matrix: airwing_model_matrix,
             view_matrix,
@@ -1312,16 +1347,6 @@ fn main() {
             ring_palette: None,
         };
         render(&mut framebuffer, &airwing_uniforms, &airwing_vertices);
-
-        if show_minimap {
-            draw_minimap(
-                &mut framebuffer,
-                &celestial_objects,
-                &earth_moon,
-                &camera,
-                sun_position.x,
-            );
-        }
 
         if framebuffer_width != window_width || framebuffer_height != window_height {
             let resampled = resample_buffer(
@@ -1341,19 +1366,6 @@ fn main() {
         }
 
         let frame_elapsed = frame_start.elapsed();
-        let frame_ms = frame_elapsed.as_secs_f32() * 1000.0;
-        avg_frame_ms = avg_frame_ms * 0.9 + frame_ms * 0.1;
-
-        if performance_cooldown_frames == 0 {
-            if avg_frame_ms > 30.0 && performance_scale_offset > -0.45 {
-                performance_scale_offset -= 0.15;
-                performance_cooldown_frames = 90;
-            } else if avg_frame_ms < 17.0 && performance_scale_offset < 0.3 {
-                performance_scale_offset += 0.15;
-                performance_cooldown_frames = 150;
-            }
-        }
-
         if frame_elapsed < frame_delay {
             std::thread::sleep(frame_delay - frame_elapsed);
         }
@@ -1361,8 +1373,13 @@ fn main() {
 }
 
 // Reescalar el framebuffer para adaptarlo al tamaño de la ventana
-fn resample_buffer(src: &[u32], src_width: usize, src_height: usize,
-                   dst_width: usize, dst_height: usize) -> Vec<u32> {
+fn resample_buffer(
+    src: &[u32],
+    src_width: usize,
+    src_height: usize,
+    dst_width: usize,
+    dst_height: usize,
+) -> Vec<u32> {
     if src_width == dst_width && src_height == dst_height {
         return src.to_vec();
     }
@@ -1426,12 +1443,11 @@ fn lerp_color(a: (f32, f32, f32), b: (f32, f32, f32), t: f32) -> (f32, f32, f32)
     )
 }
 
-
 fn handle_input(window: &Window, camera: &mut Camera) {
     let move_speed = 10.0;
     let rotate_speed = 0.02;
     let zoom_speed = 20.0;
-    
+
     // WASD: mover cámara (W/S eje vertical, A/D lateral)
     if window.is_key_down(Key::A) {
         camera.move_right(-move_speed);
@@ -1445,7 +1461,7 @@ fn handle_input(window: &Window, camera: &mut Camera) {
     if window.is_key_down(Key::S) {
         camera.move_up(-move_speed);
     }
-    
+
     // Flechas laterales: orbitar alrededor del objetivo
     if window.is_key_down(Key::Left) {
         camera.orbit(-rotate_speed, 0.0);
@@ -1453,14 +1469,16 @@ fn handle_input(window: &Window, camera: &mut Camera) {
     if window.is_key_down(Key::Right) {
         camera.orbit(rotate_speed, 0.0);
     }
-    
-    // Flechas verticales y Z/X: zoom
+
+    // Flechas verticales: avanzar/retroceder la cámara manteniendo la distancia relativa
     if window.is_key_down(Key::Up) {
-        camera.zoom_in(zoom_speed);
+        camera.move_forward(zoom_speed);
     }
     if window.is_key_down(Key::Down) {
-        camera.zoom_out(zoom_speed);
+        camera.move_forward(-zoom_speed);
     }
+
+    // Z/X: zoom In/Out tradicional (acerca/aleja el punto de interés)
     if window.is_key_down(Key::Z) {
         camera.zoom_in(zoom_speed);
     }

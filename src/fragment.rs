@@ -1,5 +1,5 @@
-use nalgebra_glm::Vec2;
 use crate::color::Color;
+use nalgebra_glm::Vec2;
 
 pub struct Fragment {
     pub position: Vec2,

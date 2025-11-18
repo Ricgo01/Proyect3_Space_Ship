@@ -1,6 +1,6 @@
 # Sistema Solar - Proyecto Shader-Based 🚀🪐
 
-Sistema solar completo renderizado con **software rasterizer** y **shaders procedurales** (sin texturas).
+Sistema solar completo renderizado con **software rasterizer** y **shaders procedurales**
 
 ![Demostración del Sistema Solar](image.png)
 *Vista general del sistema solar completo*
@@ -15,92 +15,60 @@ Sistema solar completo renderizado con **software rasterizer** y **shaders proce
 Sistema solar interactivo con 8 cuerpos celestes únicos, todos generados mediante **shaders procedurales avanzados** usando técnicas de ruido (FBM, Turbulence, Worley). Implementado en **Rust** con rasterización por software y optimizaciones multi-core.
 
 ### 🎮 Controles
-- **WASD**: Mover cámara
-- **Q/E**: Subir/Bajar
-- **Flechas**: Rotar cámara (orbitar)
-- **Z/X**: Zoom In/Out
-- **ESC**: Salir
+- **W / S**: Subir o bajar la cámara
+- **A / D**: Desplazamiento lateral (strafe)
+- **← / →**: Orbitar la cámara alrededor del objetivo
+- **↑ / ↓**: Avanzar o retroceder manteniendo la orientación
+- **Z / X**: Zoom In/Out sobre el punto de interés
+- **O**: Mostrar u ocultar las órbitas
+- **ESC**: Salir del programa
 
 ---
 
-## 🌟 Cuerpos Celestes Implementados
+![Video demostrativo](https://youtu.be/jQ9-BoPCNgo)
 
-### ⭐ **Estrella (Requerido)** - 40 puntos
 
-![Estrella - Sol](estrellas.png)
+### Estética General
+Inspirada en un sistema solar alienígena: shaders con bioluminiscencia, niebla y bandas cromáticas crean una escena coherente y llamativa.
 
-#### **Sol** 
-- **Shader de 10+ capas**: Núcleo radiante, corona solar, llamaradas, manchas solares, emisión de luz, gradientes de temperatura
-- **Efectos especiales**: Pulsación dinámica, emisión volumétrica, distorsión de calor
-- **Ubicación**: Centro del sistema (600, 400, 0)
-- **Tamaño**: 80 unidades de radio
+![Captura estética principal](assets/Estetica.png)
 
----
+### Performance de la Escena
+El rasterizador por software aprovecha paralelismo con `rayon`; aunque la tasa de cuadros fluctúa, se mantiene utilizable incluso en órbitas densas.
 
-### 🪨 **Planetas Rocosos (Requerido: 1)** - 40 puntos c/u
+![Indicadores de performance](https://youtu.be/EhYAIewqwuw)
 
-![Planeta Rocoso - Tierra con Luna](tierra_rocoso_luna.png)
+### Planetas, Estrellas y Lunas
+Se incluyen Sol, Tierra+Luna, Marte, Saturno con anillos, Ice Planet y Alien Planet; todos con shaders procedurales distintos.
 
-#### 1. **Tierra** ⭐ (Planeta Rocoso Principal + Luna)
-- **🌙 Luna orbital**: Radio 15 unidades, órbita muy cercana (20 puntos extra)
-- **Ubicación**: 250 unidades del Sol
-- **Puntos**: **60 puntos** (40 shader + 20 luna)
+![Galería de cuerpos celestes](assets/planetas.png)
 
-#### 2. **Marte**
-- **Shader de 5 capas**: Superficie oxidada (rojo), dunas, cráteres de impacto, casquetes polares, tormentas de arena
-- **Ubicación**: 450 unidades del Sol
-- **Puntos**: **40 puntos**
+### Nave Personalizada
+El Airwing inspirado en StarFox fue modelado en Blender, se renderiza con el mismo rasterizador y mantiene animaciones de alabeo ligadas a la cámara.
 
-#### 3. **Mercurio/Lava Planet** (Extra)
-- **Shader de 6 capas**: Lava fundida, grietas brillantes, superficie negra volcánica, emisión de calor, cenizas, distorsión térmica
-- **Ubicación**: 150 unidades del Sol (muy cerca)
-- **Puntos**: **10 puntos** (planeta extra)
+![Airwing persiguiendo la cámara](assets/airwing.png)
+![Airwing persiguiendo la cámara](assets/image.png)
 
----
 
-### 🌀 **Gigantes Gaseosos (Requerido: 1)** - 40 puntos c/u
+### Skybox Estelar
+Un campo estelar procedural envuelve la escena para dar profundidad y referencia visual en el horizonte.
 
-#### 1. **Júpiter** ⭐ (Gigante Gaseoso Principal)
-- **Ubicación**: 700 unidades del Sol
-- **Tamaño**: 55 unidades (el más grande)
-- **Puntos**: **40 puntos**
+![Skybox estelar](assets/skybox.png)
 
-#### 2. **Saturno** ⭐ (Gigante Gaseoso + Anillos)
+### Colisiones Nave/Cámara
+El detector de colisiones calcula penetración contra cada cuerpo (excepto el sol) y evita que la nave atraviese planetas o lunas.
 
-![Gigante Gaseoso - Saturno con Anillos](Anillos.png)
+![Demostración de colisión](assets/colisiones.png)
 
-- **Shader de 10 capas**: Atmósfera beige/crema, bandas suaves, turbulencias, jet streams, hexágono polar, nubes wispy, scattering
-- **🪐 Sistema de Anillos**: 
-  - Shader de 4 capas para anillos
-  - Bandas principales
-  - División de Cassini (gap)
-  - Partículas con ruido
-  - Translucidez con backlight
-  - Radio: 2.5x el planeta
-- **Ubicación**: 1000 unidades del Sol
-- **Puntos**: **60 puntos** (40 shader + 20 anillos)
+### Movimiento 3D de Cámara
+La cámara admite traslación 3D, órbitas, zoom relativo y control desacoplado para navegar libremente por el sistema.
 
----
+![Trayectoria de cámara](https://youtu.be/EhYAIewqwuw)
 
-### 🎨 **Planetas Extra** - 10 puntos c/u
+### Órbitas Renderizadas
+Cada planeta y la Luna muestran su órbita elíptica con segmentación adaptativa, facilitando entender sus trayectorias.
 
-#### 3. **Urano/Ice Planet**
-- **Shader de 5 capas**: Hielo azul-turquesa, cristales, grietas congeladas, niebla fría, reflexión especular
-- **Ubicación**: 1300 unidades del Sol
-- **Puntos**: **10 puntos** (planeta extra)
+![Órbitas visibles](assets/skybox.png)
 
-#### 4. **Neptuno/Alien Planet** ⭐ (Extra con Anillos)
 
-![Planeta Extra - Alien con Anillos](alienextra.png)
-
-- **Shader de 7 capas**: Superficie alienígena morada/verdosa, bioluminiscencia, patrones orgánicos, tentáculos, atmósfera tóxica, niebla, pulsaciones
-- **🪐 Anillos Alienígenas**:
-  - Shader de anillos modificado
-  - Radio: 4.0x el planeta (ENORMES)
-  - Rotación dramática inclinada
-  - Bandas de partículas
-- **Ubicación**: 1600 unidades del Sol (el más lejano)
-- **Puntos**: **30 puntos** (10 planeta extra + 20 anillos)
-
----
 

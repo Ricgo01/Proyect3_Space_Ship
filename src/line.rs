@@ -1,6 +1,6 @@
+use crate::color::Color;
 use crate::fragment::Fragment;
 use crate::vertex::Vertex;
-use crate::color::Color;
 
 pub fn line(a: &Vertex, b: &Vertex) -> Vec<Fragment> {
     let mut fragments = Vec::new();
@@ -30,9 +30,16 @@ pub fn line(a: &Vertex, b: &Vertex) -> Vec<Fragment> {
             (step / total_steps).clamp(0.0, 1.0)
         };
         let z = start.z + (end.z - start.z) * t;
-        fragments.push(Fragment::new(x0 as f32, y0 as f32, Color::new(255, 255, 255), z));
+        fragments.push(Fragment::new(
+            x0 as f32,
+            y0 as f32,
+            Color::new(255, 255, 255),
+            z,
+        ));
 
-        if x0 == x1 && y0 == y1 { break; }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
 
         let e2 = err;
         if e2 > -dx {
