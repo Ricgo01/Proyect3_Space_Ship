@@ -4,7 +4,7 @@ use crate::vertex::Vertex;
 use crate::Uniforms;
 use nalgebra_glm::Vec3;
 
-// ============= FUNCIONES DE NOISE MEJORADAS =============
+// Utilidades para generar ruido e interpolaciones
 
 // Función auxiliar para ruido pseudo-aleatorio
 fn noise(x: f32, y: f32, z: f32) -> f32 {
@@ -218,7 +218,7 @@ fn reflect(incident: Vec3, normal: Vec3) -> Vec3 {
     incident - normal * 2.0 * incident.dot(&normal)
 }
 
-// ============= NAVE (AIRWING) =============
+// Shader del Airwing
 fn airwing_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
     let normal = vertex.transformed_normal.normalize();
     let fragment_pos = vertex.transformed_position;
@@ -254,7 +254,7 @@ fn airwing_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) ->
     hull_color + specular
 }
 
-// ============= SOL (ESTRELLA) =============
+// Shader del Sol
 // Shader con 5+ capas: núcleo, plasma, manchas solares, llamaradas, corona
 pub fn sun_shader(_fragment: &Fragment, vertex: &Vertex, time: f32) -> Color {
     let pos = vertex.position;
@@ -316,7 +316,7 @@ pub fn sun_shader(_fragment: &Fragment, vertex: &Vertex, time: f32) -> Color {
     final_color * limb_darkening * 2.5
 }
 
-// ============= PLANETA ROCOSO (TIPO TIERRA) =============
+// Planeta rocoso tipo Tierra
 // Shader con 6 capas: océanos, continentes, biomas, casquetes polares, nubes, atmósfera
 pub fn earth_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
     let pos = vertex.position;
@@ -466,7 +466,7 @@ pub fn earth_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifo
     mix_color(base_color, atmosphere_color, atmosphere_glow)
 }
 
-// ============= GIGANTE GASEOSO (TIPO JÚPITER) =============
+// Gigante gaseoso tipo Júpiter
 // Shader con 7+ capas: atmósfera profunda, bandas en múltiples alturas, turbulencias,
 // gran mancha roja, tormentas secundarias, scattering, brillo volumétrico
 pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
@@ -480,14 +480,14 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
     let edge_factor = normal.dot(&view_dir).abs();
     let atmospheric_depth = (1.0 - edge_factor).powf(0.5);
 
-    // ===== CAPA 1: Atmósfera profunda base (colores más precisos de Júpiter) =====
+    // Capa 1: Atmósfera profunda base con tonos cálidos de Júpiter
     // Júpiter tiene tonos naranjas, cremas y marrones
     let deep_atm_noise = fbm_adaptive(pos.x * 2.5, pos.y * 2.5, pos.z * 2.5, 4, detail);
     let deep_color1 = Color::from_float(0.82, 0.58, 0.35); // Naranja cálido
     let deep_color2 = Color::from_float(0.68, 0.45, 0.28); // Marrón dorado
     let deep_layer = mix_color(deep_color1, deep_color2, deep_atm_noise);
 
-    // ===== CAPA 2: Bandas atmosféricas horizontales (como en la referencia de Three.js) =====
+    // Capa 2: Bandas horizontales con bastante turbulencia
     // Júpiter tiene bandas muy pronunciadas con mucha turbulencia
     let band_freq = 14.0; // Más bandas para mayor realismo
 
@@ -542,7 +542,7 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
 
     let mut base_color = mix_color(deep_layer, band_color, 0.4 + atmospheric_depth * 0.6);
 
-    // ===== CAPA 3: Turbulencias y vórtices (tormentas joviales) =====
+    // Capa 3: Turbulencias y vórtices característicos
     // Júpiter tiene miles de tormentas, vamos a simular múltiples escalas
     let large_vortex = turbulence_adaptive(
         pos.x * 7.0 + uniforms.time * 0.035,
@@ -569,7 +569,7 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
     let vortex_color = Color::from_float(0.85, 0.65, 0.45); // Naranja turbulento
     base_color = mix_color(base_color, vortex_color, vortex_combined * 0.4);
 
-    // ===== CAPA 4: Gran Mancha Roja (Great Red Spot) =====
+    // Capa 4: Gran Mancha Roja
     // La tormenta más famosa del sistema solar - tiene que verse BIEN
     let storm_center = Vec3::new(0.3, -0.12, 0.65);
     let dx = pos.x - storm_center.x;
@@ -611,7 +611,7 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
         storm_intensity * (0.7 + storm_swirl * 0.3),
     );
 
-    // ===== CAPA 5: Tormentas secundarias =====
+    // Capa 5: Tormentas secundarias
     let white_spot_center = Vec3::new(-0.35, 0.35, 0.5);
     let dist_white = ((pos - white_spot_center).magnitude() * 7.0 - 1.0).max(0.0);
     let white_spot_intensity = (1.0 - dist_white).max(0.0).powf(2.0);
@@ -624,7 +624,7 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
     let brown_storm_color = Color::from_float(0.65, 0.45, 0.30);
     base_color = mix_color(base_color, brown_storm_color, brown_spot_intensity * 0.4);
 
-    // ===== CAPA 6: Nubes de alta altitud =====
+    // Capa 6: Nubes de gran altura
     let high_clouds = fbm_adaptive(
         pos.x * 8.0 + uniforms.time * 0.12,
         pos.y * 8.0,
@@ -636,7 +636,7 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
     let high_cloud_color = Color::from_float(0.98, 0.90, 0.75);
     base_color = mix_color(base_color, high_cloud_color, cloud_intensity * 0.25);
 
-    // ===== CAPA 7: Iluminación atmosférica realista (inspirada en Three.js) =====
+    // Capa 7: Iluminación atmosférica
     let light_dir = (uniforms.light_position - fragment_pos).normalize();
 
     // Diffuse con wrap lighting para atmósfera densa
@@ -658,17 +658,17 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
     let lighting = ambient + diffuse_factor * 0.85 + subsurface + spec + fresnel;
     base_color = base_color * lighting.clamp(0.3, 1.8);
 
-    // ===== CAPA 8: Scattering atmosférico (rayos de luz dispersándose) =====
+    // Capa 8: Scattering atmosférico
     let scatter_intensity = (1.0 - edge_factor).powf(2.8);
     let scatter_color = Color::from_float(0.92, 0.78, 0.62); // Naranja dorado cálido
     base_color = mix_color(base_color, scatter_color, scatter_intensity * 0.25);
 
-    // ===== CAPA 9: Rim Light volumétrico (brillo atmosférico en los bordes) =====
+    // Capa 9: Brillo volumétrico en los bordes
     let rim_light = (1.0 - edge_factor).powf(2.2);
     let rim_color = Color::from_float(0.98, 0.82, 0.62);
     base_color = mix_color(base_color, rim_color, rim_light * 0.35);
 
-    // ===== CAPA 10: Variación de densidad =====
+    // Capa 10: Variación de densidad
     let density_variation = fbm_adaptive(
         pos.x * 12.0 + uniforms.time * 0.06,
         pos.y * 12.0,
@@ -682,7 +682,7 @@ pub fn gas_giant_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
     base_color
 }
 
-// ============= PLANETA ROCOSO (TIPO MARTE) =============
+// Planeta rocoso tipo Marte
 // Shader con 4 capas: superficie oxidada, cráteres, polos de hielo, atmósfera
 pub fn mars_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
     let pos = vertex.position;
@@ -747,7 +747,7 @@ pub fn mars_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unifor
     mix_color(base_color, atm_color, atmosphere * 0.2)
 }
 
-// ============= GIGANTE GASEOSO CON ANILLOS (TIPO SATURNO) =============
+// Gigante gaseoso con anillos tipo Saturno
 // Shader con 7+ capas: atmósfera profunda, bandas en múltiples altitudes, turbulencias sutiles,
 // hexágono polar, corrientes de viento, scattering, brillo volumétrico
 pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
@@ -761,13 +761,13 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
     let edge_factor = normal.dot(&view_dir).abs();
     let atmospheric_depth = (1.0 - edge_factor).powf(0.5);
 
-    // ===== CAPA 1: Atmósfera profunda base (tonos crema/beige) =====
+    // Capa 1: Atmósfera profunda en tonos crema
     let deep_atm_noise = fbm_adaptive(pos.x * 1.8, pos.y * 1.8, pos.z * 1.8, 3, detail);
     let deep_color1 = Color::from_float(0.90, 0.85, 0.68);
     let deep_color2 = Color::from_float(0.85, 0.80, 0.63);
     let deep_layer = mix_color(deep_color1, deep_color2, deep_atm_noise);
 
-    // ===== CAPA 2: Bandas atmosféricas en múltiples altitudes =====
+    // Capa 2: Bandas atmosféricas a distintas alturas
     let band_freq = 9.0;
 
     // Banda lenta (capa profunda) - movimiento lento hacia el este
@@ -823,7 +823,7 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
     // Mezclar capa profunda con bandas
     let mut base_color = mix_color(deep_layer, band_color, 0.3 + atmospheric_depth * 0.7);
 
-    // ===== CAPA 3: Turbulencias sutiles (más suaves que Júpiter) =====
+    // Capa 3: Turbulencias suaves
     let gentle_turbulence = fbm_adaptive(
         pos.x * 5.0 + uniforms.time * 0.028,
         pos.y * 3.5,
@@ -834,7 +834,7 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
     let turb_color = Color::from_float(0.91, 0.87, 0.71);
     base_color = mix_color(base_color, turb_color, gentle_turbulence * 0.25);
 
-    // ===== CAPA 4: Corrientes de viento (jet streams) =====
+    // Capa 4: Corrientes de viento
     // Saturno tiene vientos muy rápidos en ciertas latitudes
     let wind_latitude = pos.y;
     let wind_strength = if wind_latitude.abs() > 0.4 && wind_latitude.abs() < 0.6 {
@@ -853,7 +853,7 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
     let wind_color = Color::from_float(0.96, 0.92, 0.76);
     base_color = mix_color(base_color, wind_color, wind_pattern * wind_strength * 0.3);
 
-    // ===== CAPA 5: Hexágono en polo norte (característica real única de Saturno) =====
+    // Capa 5: Patrón hexagonal del polo norte
     if pos.y > 0.68 {
         let angle = pos.x.atan2(pos.z);
 
@@ -882,7 +882,7 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
         base_color = mix_color(base_color, hex_turb_color, hex_turb * lat_factor * 0.3);
     }
 
-    // ===== CAPA 6: Nubes de alta altitud (wispy clouds) =====
+    // Capa 6: Nubes delgadas en gran altitud
     let high_clouds = fbm_adaptive(
         pos.x * 7.0 + uniforms.time * 0.08,
         pos.y * 7.0,
@@ -894,7 +894,7 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
     let wispy_color = Color::from_float(0.99, 0.96, 0.82);
     base_color = mix_color(base_color, wispy_color, cloud_intensity * 0.2);
 
-    // ===== CAPA 7: Iluminación atmosférica (gas dispersa luz suavemente) =====
+    // Capa 7: Iluminación suave del gas
     let light_dir = (uniforms.light_position - fragment_pos).normalize();
     let diffuse_factor = (normal.dot(&light_dir) * 0.5 + 0.5).max(0.0); // Wrap lighting
 
@@ -911,17 +911,17 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
     let lighting = ambient + diffuse_factor * 0.65 + subsurface + spec;
     base_color = base_color * lighting.min(1.4);
 
-    // ===== CAPA 8: Scattering atmosférico (tonos dorados) =====
+    // Capa 8: Scattering en tonos dorados
     let scatter_intensity = (1.0 - edge_factor).powf(3.5);
     let scatter_color = Color::from_float(0.95, 0.91, 0.75);
     base_color = mix_color(base_color, scatter_color, scatter_intensity * 0.18);
 
-    // ===== CAPA 9: Brillo volumétrico suave en los bordes =====
+    // Capa 9: Brillo volumétrico en el borde
     let rim_light = (1.0 - edge_factor).powf(2.2);
     let rim_color = Color::from_float(0.99, 0.95, 0.80);
     base_color = mix_color(base_color, rim_color, rim_light * 0.25);
 
-    // ===== CAPA 10: Variación de densidad (atmósfera menos densa en los bordes) =====
+    // Capa 10: Cambios de densidad hacia el borde
     let density_variation = fbm_adaptive(
         pos.x * 10.0 + uniforms.time * 0.04,
         pos.y * 10.0,
@@ -935,7 +935,7 @@ pub fn saturn_like_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Unif
     base_color
 }
 
-// ============= ANILLOS MEJORADOS =============
+// Shader de anillos
 // Shader con 4 capas: bandas principales, gaps, partículas, sombras
 pub fn ring_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
     let pos = vertex.position;
@@ -1027,7 +1027,7 @@ pub fn ring_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -
     mix_color(base_color, glow_color, backlight * 0.3)
 }
 
-// ============= LUNA =============
+// Shader de la Luna
 // Shader con 4 capas: superficie, cráteres, mares, rayos de eyección
 pub fn moon_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
     let pos = vertex.position;
@@ -1083,7 +1083,7 @@ pub fn moon_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -
     base_color
 }
 
-// ============= PLANETAS EXTRAS PARA BONIFICACIÓN =============
+// Planetas extra para contenido adicional
 
 // PLANETA DE LAVA VOLCÁNICO - 4 capas
 pub fn lava_planet_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
@@ -1269,7 +1269,7 @@ pub fn alien_planet_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uni
     mix_color(base_color, atm_color, atmosphere * 0.5)
 }
 
-// ============= ENUM Y FUNCIÓN DE SELECCIÓN =============
+// Selección de shader y enumeraciones auxiliares
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum CelestialBody {

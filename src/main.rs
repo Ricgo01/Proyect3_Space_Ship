@@ -385,25 +385,24 @@ fn detect_ship_collision(
     best_hit
 }
 
-// Sistema LOD de 3 niveles para máximo rendimiento
-// Retorna: (0=ultra_low, 1=low, 2=high)
+// Asigna un nivel de detalle simple (0), medio (1) o completo (2) según la distancia.
 fn check_lod(object_position: Vec3, object_radius: f32, camera: &Camera) -> usize {
-    // Calcular distancia del objeto a la cámara
+    // Distancia del objeto hacia la cámara
     let to_object = object_position - camera.position;
     let distance = to_object.magnitude();
 
-    // ULTRA LOW POLY: MUY cerca (12 vértices, 20 triángulos) - MÁXIMO RENDIMIENTO
+    // Muy cerca: malla mínima para evitar desperdicio de fill-rate
     if distance < object_radius * 4.0 {
-        return 0; // Ultra low poly
+        return 0;
     }
 
-    // LOW POLY: Cerca-medio (482 vértices, 512 triángulos) - Buen rendimiento
+    // Distancia media: mantener pocos triángulos pero más detalle visual
     if distance < object_radius * 12.0 {
-        return 1; // Low poly
+        return 1;
     }
 
-    // HIGH POLY: Lejos (482 vértices, 960 triángulos) - Mejor calidad
-    2 // High poly
+    // Lejos: toda la malla disponible
+    2
 }
 
 fn create_viewport_matrix(width: f32, height: f32) -> Mat4 {
@@ -430,29 +429,26 @@ fn create_viewport_matrix(width: f32, height: f32) -> Mat4 {
 fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Vertex]) {
     use rayon::prelude::*;
 
-    // Vertex Shader Stage (PARALELO - 2-4x más rápido en multi-core)
+    // Etapa de vértices: se ejecuta en paralelo para aprovechar todos los núcleos
     let transformed_vertices: Vec<Vertex> = vertex_array
         .par_iter()
         .map(|vertex| vertex_shader(vertex, uniforms))
         .collect();
 
-    // Primitive Assembly Stage (secuencial - es muy rápido)
+    // Ensamblar triángulos y descartar los que miran en sentido contrario
     let mut triangles = Vec::new();
     for i in (0..transformed_vertices.len()).step_by(3) {
         if i + 2 < transformed_vertices.len() {
-            // Backface culling TEMPRANO (antes de rasterizar)
             let v0 = &transformed_vertices[i].transformed_position;
             let v1 = &transformed_vertices[i + 1].transformed_position;
             let v2 = &transformed_vertices[i + 2].transformed_position;
 
-            // Producto cruz en 2D (determina orientación)
             let edge1_x = v1.x - v0.x;
             let edge1_y = v1.y - v0.y;
             let edge2_x = v2.x - v0.x;
             let edge2_y = v2.y - v0.y;
             let cross = edge1_x * edge2_y - edge1_y * edge2_x;
 
-            // Si cross <= 0, el triángulo está de espaldas - SALTAR
             if cross > 0.0 {
                 triangles.push([
                     transformed_vertices[i].clone(),
@@ -463,8 +459,7 @@ fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Ve
         }
     }
 
-    // Rasterización y Fragment Shader (PARALELO con chunks)
-    // Procesar triángulos en paralelo y luego escribir al framebuffer
+    // Rasterizar cada triángulo y ejecutar su shader de fragmentos en paralelo
     let fragments: Vec<_> = triangles
         .par_iter()
         .flat_map(|tri| {
@@ -472,7 +467,6 @@ fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Ve
             frags
                 .into_iter()
                 .map(|mut frag| {
-                    // Aplicar shader
                     let shader_color =
                         get_celestial_shader(uniforms.current_shader, &frag, &tri[0], uniforms);
                     frag.color = shader_color;
@@ -482,7 +476,7 @@ fn render(framebuffer: &mut Framebuffer, uniforms: &Uniforms, vertex_array: &[Ve
         })
         .collect();
 
-    // Escribir fragmentos al framebuffer (secuencial para evitar race conditions en z-buffer)
+    // Al escribir en el framebuffer se hace de forma secuencial para proteger el z-buffer
     for frag in fragments {
         let x = frag.position.x as usize;
         let y = frag.position.y as usize;
@@ -894,15 +888,14 @@ fn main() {
     let sun_position = Vec3::new(600.0, 400.0, 0.0);
     let stars = generate_stars(STAR_COUNT, STARFIELD_RADIUS, sun_position);
 
-    // Cargar los modelos necesarios (todos los planetas usan Esfera_Low para máximo rendimiento)
+    // Todos los planetas comparten la malla Esfera_Low para simplificar el render
     let sphere_low = Obj::load("models/Esfera_Low.obj").expect("Failed to load Esfera_Low.obj");
     let sphere_low_vertices = sphere_low.get_vertex_array();
     let ring_mesh = Obj::load("models/anillo.obj").expect("Failed to load anillo.obj");
     let ring_vertices = ring_mesh.get_vertex_array();
     let airwing_mesh = Obj::load("models/airwing.obj").expect("Failed to load airwing.obj");
     let airwing_vertices = airwing_mesh.get_vertex_array();
-    // Crear los cuerpos celestes con distancias orbitales bien separadas
-    // TODOS usan esfera_chica (LOW POLY) para MEJOR RENDIMIENTO
+    // Definición de los cuerpos celestes con órbitas separadas y la misma malla base
     let mut celestial_objects = vec![
         // Sol (centro)
         CelestialObject::new(CelestialBody::Sun, sun_position, 100.0, false)
@@ -954,9 +947,9 @@ fn main() {
             .with_rotation_speed(Vec3::new(0.0, 0.019, 0.0)),
     ];
 
-    // Luna de la Tierra - esfera chica (SUPER CERCA de la Tierra)
+    // La luna reusa la esfera pequeña y permanece cerca de la Tierra
     let mut earth_moon = CelestialObject::new(CelestialBody::Moon, sun_position, 10.0, false)
-        .with_orbit(20.0, 1.2) // Órbita cercana (20 unidades) - acompaña a la Tierra
+        .with_orbit(20.0, 1.2) // Orbita a poca distancia para que siempre acompañe
         .with_orbit_shape(0.5)
         .with_rotation_speed(Vec3::new(0.0, 0.01, 0.0));
 
@@ -983,9 +976,8 @@ fn main() {
     let mut ship_forward_state = 0.0f32;
     let mut ship_idle_phase = 0.0f32;
 
-    // Inicializar cámara con un ángulo similar a la referencia (ligeramente elevada y hacia atrás)
+    // La cámara arranca en una posición elevada para abarcar el sistema completo
     let mut camera = Camera::new(
-        // Posición inicial mucho más alejada para ver todo el sistema al arrancar
         Vec3::new(
             sun_position.x,
             sun_position.y + 420.0,
@@ -1448,7 +1440,7 @@ fn handle_input(window: &Window, camera: &mut Camera) {
     let rotate_speed = 0.02;
     let zoom_speed = 20.0;
 
-    // WASD: mover cámara (W/S eje vertical, A/D lateral)
+    // WASD desplaza la cámara en los ejes básicos
     if window.is_key_down(Key::A) {
         camera.move_right(-move_speed);
     }
@@ -1462,7 +1454,7 @@ fn handle_input(window: &Window, camera: &mut Camera) {
         camera.move_up(-move_speed);
     }
 
-    // Flechas laterales: orbitar alrededor del objetivo
+    // Las flechas izquierda/derecha orbitan alrededor del punto de interés
     if window.is_key_down(Key::Left) {
         camera.orbit(-rotate_speed, 0.0);
     }
@@ -1470,7 +1462,7 @@ fn handle_input(window: &Window, camera: &mut Camera) {
         camera.orbit(rotate_speed, 0.0);
     }
 
-    // Flechas verticales: avanzar/retroceder la cámara manteniendo la distancia relativa
+    // Flechas arriba/abajo avanzan o retroceden sin perder orientación
     if window.is_key_down(Key::Up) {
         camera.move_forward(zoom_speed);
     }
@@ -1478,7 +1470,7 @@ fn handle_input(window: &Window, camera: &mut Camera) {
         camera.move_forward(-zoom_speed);
     }
 
-    // Z/X: zoom In/Out tradicional (acerca/aleja el punto de interés)
+    // Z y X acercan o alejan el punto observado
     if window.is_key_down(Key::Z) {
         camera.zoom_in(zoom_speed);
     }

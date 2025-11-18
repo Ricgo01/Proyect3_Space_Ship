@@ -10,7 +10,7 @@ Sistema solar completo renderizado con **software rasterizer** y **shaders proce
 
 ---
 
-## � Descripción del Proyecto
+## 📝 Descripción del Proyecto
 
 Sistema solar interactivo con 8 cuerpos celestes únicos, todos generados mediante **shaders procedurales avanzados** usando técnicas de ruido (FBM, Turbulence, Worley). Implementado en **Rust** con rasterización por software y optimizaciones multi-core.
 
@@ -25,7 +25,7 @@ Sistema solar interactivo con 8 cuerpos celestes únicos, todos generados median
 
 ---
 
-![Video demostrativo](https://youtu.be/jQ9-BoPCNgo)
+[![Video demostrativo](assets/Estetica.png)](https://youtu.be/jQ9-BoPCNgo)
 
 
 ### Estética General
@@ -36,7 +36,7 @@ Inspirada en un sistema solar alienígena: shaders con bioluminiscencia, niebla 
 ### Performance de la Escena
 El rasterizador por software aprovecha paralelismo con `rayon`; aunque la tasa de cuadros fluctúa, se mantiene utilizable incluso en órbitas densas.
 
-![Indicadores de performance](https://youtu.be/EhYAIewqwuw)
+[![Indicadores de performance](assets/Estetica.png)](https://youtu.be/EhYAIewqwuw)
 
 ### Planetas, Estrellas y Lunas
 Se incluyen Sol, Tierra+Luna, Marte, Saturno con anillos, Ice Planet y Alien Planet; todos con shaders procedurales distintos.
@@ -63,12 +63,12 @@ El detector de colisiones calcula penetración contra cada cuerpo (excepto el so
 ### Movimiento 3D de Cámara
 La cámara admite traslación 3D, órbitas, zoom relativo y control desacoplado para navegar libremente por el sistema.
 
-![Trayectoria de cámara](https://youtu.be/EhYAIewqwuw)
+[![Trayectoria de cámara](assets/Estetica.png)](https://youtu.be/EhYAIewqwuw)
 
 ### Órbitas Renderizadas
 Cada planeta y la Luna muestran su órbita elíptica con segmentación adaptativa, facilitando entender sus trayectorias.
 
-![Órbitas visibles](assets/skybox.png)
+[![Órbitas visibles](assets/Estetica.png)](assets/skybox.png)
 
 
 
