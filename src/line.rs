@@ -20,9 +20,16 @@ pub fn line(a: &Vertex, b: &Vertex) -> Vec<Fragment> {
     let sy = if y0 < y1 { 1 } else { -1 };
 
     let mut err = if dx > dy { dx / 2 } else { -dy / 2 };
+    let total_steps = dx.max(dy).max(1) as f32;
+    let mut step = 0.0f32;
 
     loop {
-        let z = start.z + (end.z - start.z) * (x0 - start.x as i32) as f32 / (end.x - start.x) as f32;
+        let t = if total_steps <= f32::EPSILON {
+            0.0
+        } else {
+            (step / total_steps).clamp(0.0, 1.0)
+        };
+        let z = start.z + (end.z - start.z) * t;
         fragments.push(Fragment::new(x0 as f32, y0 as f32, Color::new(255, 255, 255), z));
 
         if x0 == x1 && y0 == y1 { break; }
@@ -36,6 +43,8 @@ pub fn line(a: &Vertex, b: &Vertex) -> Vec<Fragment> {
             err += dx;
             y0 += sy;
         }
+
+        step += 1.0;
     }
 
     fragments

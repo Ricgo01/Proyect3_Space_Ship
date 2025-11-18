@@ -218,6 +218,34 @@ fn reflect(incident: Vec3, normal: Vec3) -> Vec3 {
     incident - normal * 2.0 * incident.dot(&normal)
 }
 
+// ============= NAVE (AIRWING) =============
+fn airwing_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -> Color {
+    let normal = vertex.transformed_normal.normalize();
+    let fragment_pos = vertex.transformed_position;
+    let light_dir = (uniforms.light_position - fragment_pos).normalize();
+    let view_dir = (uniforms.camera_position - fragment_pos).normalize();
+    let half_vector = (light_dir + view_dir).normalize();
+
+    let base_color = Color::from_float(0.10, 0.82, 0.98);
+    let panel_color = Color::from_float(0.02, 0.09, 0.18);
+    let accent_color = Color::from_float(0.45, 0.95, 1.0);
+
+    let diff = normal.dot(&light_dir).max(0.0);
+    let diffuse = mix_color(panel_color, base_color, (0.25 + diff * 0.75).min(1.0));
+    let spec = normal.dot(&half_vector).max(0.0).powf(28.0);
+    let specular = Color::from_float(0.85, 0.95, 1.0) * (spec * 0.8);
+
+    let hull_noise = worley_noise(
+        vertex.position.x * 6.0,
+        vertex.position.y * 6.0,
+        vertex.position.z * 6.0,
+    );
+    let accent_weight = ((vertex.position.z * 10.0).sin() * 0.5 + 0.5) * 0.35 + hull_noise * 0.15;
+    let hull_color = mix_color(diffuse, accent_color, accent_weight.min(0.6));
+
+    hull_color + specular
+}
+
 // ============= SOL (ESTRELLA) =============
 // Shader con 5+ capas: núcleo, plasma, manchas solares, llamaradas, corona
 pub fn sun_shader(_fragment: &Fragment, vertex: &Vertex, time: f32) -> Color {
@@ -894,23 +922,33 @@ pub fn ring_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -
     
     // Distancia radial desde el centro (en el plano XZ)
     let radial_dist = (pos.x * pos.x + pos.z * pos.z).sqrt();
-    
-    // IMPORTANTE: Solo renderizar anillos entre ciertos radios (crear el "agujero" en el centro)
-    // Los anillos están entre 0.6 y 1.0 del radio normalizado
-    if radial_dist < 0.6 || radial_dist > 1.0 || pos.y.abs() > 0.05 {
-        // Fuera del rango de anillos o demasiado lejos del plano ecuatorial = transparente/negro
+
+    // Rango real del modelo anillo.obj (medido en Blender/python): ~1.48 - 2.12
+    const INNER_RADIUS: f32 = 1.45;
+    const OUTER_RADIUS: f32 = 2.15;
+
+    if radial_dist < INNER_RADIUS || radial_dist > OUTER_RADIUS || pos.y.abs() > 0.08 {
+        // Fuera del rango físico del modelo o demasiado lejos del plano ecuatorial = transparente
         return Color::new(0, 0, 0);
     }
+
+    let normalized_radius = ((radial_dist - INNER_RADIUS) / (OUTER_RADIUS - INNER_RADIUS)).clamp(0.0, 1.0);
     
+    // Paleta de colores personalizada por planeta
+    let palette = uniforms.ring_palette.unwrap_or([
+        Color::from_float(0.95, 0.90, 0.75),
+        Color::from_float(0.85, 0.80, 0.65),
+        Color::from_float(0.75, 0.70, 0.60),
+    ]);
+    let ring_color1 = palette[0];
+    let ring_color2 = palette[1];
+    let ring_color3 = palette[2];
+    let gap_color = ring_color3 * 0.35;
+    let accent_color = ring_color1 * 1.08;
+
     // Capa 1: Bandas principales con divisiones (Cassini Division)
-    let band_pattern = (radial_dist * 40.0).sin();
-    let gap_pattern = ((radial_dist - 2.5).abs() * 50.0).cos(); // Gap de Cassini
-    
-    // Colores de los anillos
-    let ring_color1 = Color::from_float(0.95, 0.9, 0.75);
-    let ring_color2 = Color::from_float(0.85, 0.8, 0.65);
-    let ring_color3 = Color::from_float(0.75, 0.7, 0.6);
-    let gap_color = Color::from_float(0.3, 0.28, 0.25);
+    let band_pattern = (normalized_radius * 60.0).sin();
+    let gap_pattern = ((normalized_radius - 0.55).abs() * 35.0).cos();
     
     let band_value = (band_pattern + 1.0) / 2.0;
     
@@ -927,19 +965,23 @@ pub fn ring_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -
         base_color = mix_color(base_color, gap_color, 0.7);
     }
     
-    // Capa 2: Partículas y textura granular
+    // Capa 2: Gradiente cromático suave a lo largo del radio
+    let gradient_color = mix_color(ring_color1, ring_color3, normalized_radius);
+    base_color = mix_color(base_color, gradient_color, 0.5);
+
+    // Capa 3: Partículas y textura granular
     let particle_noise = fbm(
         pos.x * 40.0 + uniforms.time * 0.05,
         pos.y * 40.0,
         pos.z * 40.0 - uniforms.time * 0.03,
         4
     );
-    let particle_color = Color::from_float(0.9, 0.85, 0.7);
+    let particle_color = mix_color(ring_color1, ring_color2, 0.4);
     base_color = mix_color(base_color, particle_color, particle_noise * 0.25);
     
-    // Capa 3: Variación radial de densidad
-    let density = (radial_dist * 15.0).sin() * 0.5 + 0.5;
-    base_color = base_color * (0.7 + density * 0.3);
+    // Capa 4: Variación radial de densidad
+    let density = (normalized_radius * 8.0).sin() * 0.5 + 0.5;
+    base_color = mix_color(base_color, accent_color, density * 0.35);
     
     // Aplicar iluminación Phong
     base_color = calculate_phong_lighting(
@@ -954,7 +996,7 @@ pub fn ring_shader(_fragment: &Fragment, vertex: &Vertex, uniforms: &Uniforms) -
         8.0
     );
     
-    // Capa 4: Efecto de translucidez cuando el sol está detrás
+    // Capa 5: Efecto de translucidez cuando el sol está detrás
     let light_dir = (uniforms.light_position - fragment_pos).normalize();
     let backlight = (-normal.dot(&light_dir)).max(0.0);
     let glow_color = Color::from_float(1.0, 0.95, 0.85);
@@ -1214,6 +1256,7 @@ pub enum CelestialBody {
     LavaPlanet,
     IcePlanet,
     AlienPlanet,
+    Airwing,
 }
 
 pub fn get_celestial_shader(
@@ -1233,5 +1276,6 @@ pub fn get_celestial_shader(
         CelestialBody::LavaPlanet => lava_planet_shader(fragment, vertex, uniforms),
         CelestialBody::IcePlanet => ice_planet_shader(fragment, vertex, uniforms),
         CelestialBody::AlienPlanet => alien_planet_shader(fragment, vertex, uniforms),
+        CelestialBody::Airwing => airwing_shader(fragment, vertex, uniforms),
     }
 }
